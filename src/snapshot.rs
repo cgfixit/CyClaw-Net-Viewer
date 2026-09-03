@@ -265,19 +265,32 @@ pub fn is_offbox(addr: SocketAddr) -> bool {
     }
 }
 
-pub fn fmt_addr(addr: SocketAddr, name: Option<&str>) -> String {
+pub fn numeric_ip(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(v) => v.to_string(),
+        IpAddr::V6(v) => v
+            .to_ipv4_mapped()
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| v.to_string()),
+    }
+}
+
+/// `host (1.2.3.4):443` when DNS gave a name and an IPv4; else hostname+literal or numeric.
+pub fn fmt_addr(addr: SocketAddr, host: Option<&str>, ipv4: Option<Ipv4Addr>) -> String {
     if addr.ip().is_unspecified() {
         return format!("*:{}", addr.port());
     }
-    if let Some(n) = name {
+    let port = addr.port();
+    let ip_txt = numeric_ip(addr.ip());
+    if let Some(n) = host {
         if !n.is_empty() {
-            return format!("{n}:{}", addr.port());
+            let shown = ipv4.map(|v| v.to_string()).unwrap_or(ip_txt);
+            return format!("{n} ({shown}):{port}");
         }
     }
-    if addr.is_ipv6() {
-        format!("[{}]:{}", addr.ip(), addr.port())
-    } else {
-        format!("{}:{}", addr.ip(), addr.port())
+    match addr.ip() {
+        IpAddr::V6(v) if v.to_ipv4_mapped().is_none() => format!("[{ip_txt}]:{port}"),
+        _ => format!("{ip_txt}:{port}"),
     }
 }
 
@@ -300,6 +313,27 @@ mod tests {
 
     fn unspecified() -> SocketAddr {
         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
+    }
+
+    #[test]
+    fn fmt_addr_hostname_and_ipv4() {
+        let v4 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 443));
+        assert_eq!(fmt_addr(v4, None, None), "8.8.8.8:443");
+        assert_eq!(
+            fmt_addr(v4, Some("dns.google"), Some(Ipv4Addr::new(8, 8, 8, 8))),
+            "dns.google (8.8.8.8):443"
+        );
+        assert_eq!(fmt_addr(unspecified(), None, None), "*:0");
+        let mapped = SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0808, 0x0808)),
+            53,
+        );
+        assert_eq!(fmt_addr(mapped, None, None), "8.8.8.8:53");
+        let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 80);
+        assert_eq!(
+            fmt_addr(v6, Some("localhost"), Some(Ipv4Addr::LOCALHOST)),
+            "localhost (127.0.0.1):80"
+        );
     }
 
     #[test]

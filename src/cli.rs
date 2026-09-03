@@ -89,9 +89,21 @@ fn run(args: &CliArgs) -> Result<bool, String> {
     Ok(true)
 }
 
-fn print_row(e: &Endpoint, csv: bool, name: &dyn Fn(std::net::IpAddr) -> Option<String>) {
-    let local = fmt_addr(e.key.local, name(e.key.local.ip()).as_deref());
-    let remote = fmt_addr(e.key.remote, name(e.key.remote.ip()).as_deref());
+fn print_row(
+    e: &Endpoint,
+    csv: bool,
+    name: &dyn Fn(std::net::IpAddr) -> Option<crate::dns::Resolved>,
+) {
+    let fmt = |addr: std::net::SocketAddr| {
+        let r = name(addr.ip());
+        fmt_addr(
+            addr,
+            r.as_ref().map(|x| x.host.as_str()),
+            r.as_ref().and_then(|x| x.ipv4),
+        )
+    };
+    let local = fmt(e.key.local);
+    let remote = fmt(e.key.remote);
     if csv {
         println!(
             "{},{},{},{},{},{},{},{}",
@@ -106,13 +118,13 @@ fn print_row(e: &Endpoint, csv: bool, name: &dyn Fn(std::net::IpAddr) -> Option<
         );
     } else {
         println!(
-            "{:<18} {:>6} {:<5} {:<6} {:<28} {:<28} {:<13} {}",
+            "{:<18} {:>6} {:<5} {:<6} {:<40} {:<40} {:<13} {}",
             trunc(&e.process, 18),
             e.key.pid,
             e.proto_label(),
             e.dir_label(),
-            trunc(&local, 28),
-            trunc(&remote, 28),
+            trunc(&local, 40),
+            trunc(&remote, 40),
             e.state_label(),
             e.path
         );

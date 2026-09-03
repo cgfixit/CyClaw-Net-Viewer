@@ -4,6 +4,8 @@ Live TCP/UDP endpoint viewer for macOS (crate name `netboard`). TCPView-class ta
 
 **Colors:** orange = TCP/UDP to an off-box remote (stays lit). Green = new outgoing, blue = new incoming/listen, yellow = state changed, red = just gone (2 ticks). ICMP/ping does not appear. **Off-box only** hides listeners and loopback.
 
+**Resolve names** (default on) shows `hostname (IPv4):port` when PTR/A exist. IPv6 sockets stay listed; IPv4-mapped v6 displays as dotted IPv4.
+
 **Close Connection** on Darwin cannot delete another process's TCB (Windows `SetTcpEntry` has no public equivalent). The menu terminates the owning process after confirm.
 
 Requires **macOS 12+** (Monterey), Intel or Apple Silicon, **Rust 1.85.0**.

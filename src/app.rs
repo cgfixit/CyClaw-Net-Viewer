@@ -535,12 +535,16 @@ impl NetBoardApp {
     }
 
     fn fmt_ep(&self, addr: std::net::SocketAddr) -> String {
-        let name = if self.resolve_names {
-            self.resolver.get(addr.ip())
+        if self.resolve_names {
+            let r = self.resolver.get(addr.ip());
+            fmt_addr(
+                addr,
+                r.as_ref().map(|x| x.host.as_str()),
+                r.as_ref().and_then(|x| x.ipv4),
+            )
         } else {
-            None
-        };
-        fmt_addr(addr, name.as_deref())
+            fmt_addr(addr, None, None)
+        }
     }
 
     fn visible(&self, rows: &[Row]) -> Vec<Row> {

@@ -1,14 +1,26 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Resolved {
+    pub host: String,
+    pub ipv4: Option<Ipv4Addr>,
+}
+
 /// Background reverse-DNS cache. Unspecified addresses are never queued.
 pub struct Resolver {
-    cache: Arc<Mutex<HashMap<IpAddr, Option<String>>>>,
+    cache: Arc<Mutex<HashMap<IpAddr, Option<Resolved>>>>,
     tx: SyncSender<IpAddr>,
+}
+
+fn cache_lock(
+    m: &Mutex<HashMap<IpAddr, Option<Resolved>>>,
+) -> std::sync::MutexGuard<'_, HashMap<IpAddr, Option<Resolved>>> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Resolver {
@@ -26,9 +38,7 @@ impl Resolver {
                     match ip {
                         Some(ip) => {
                             let name = lookup_ip(ip);
-                            if let Ok(mut c) = cache.lock() {
-                                c.insert(ip, name);
-                            }
+                            cache_lock(&cache).insert(ip, name);
                         }
                         None => break,
                     }
@@ -41,7 +51,7 @@ impl Resolver {
         if ip.is_unspecified() {
             return;
         }
-        let mut cache = self.cache.lock().expect("dns cache");
+        let mut cache = cache_lock(&self.cache);
         if cache.contains_key(&ip) {
             return;
         }
@@ -50,24 +60,18 @@ impl Resolver {
         }
     }
 
-    pub fn get(&self, ip: IpAddr) -> Option<String> {
-        self.cache
-            .lock()
-            .ok()
-            .and_then(|c| c.get(&ip).cloned().flatten())
+    pub fn get(&self, ip: IpAddr) -> Option<Resolved> {
+        cache_lock(&self.cache).get(&ip).cloned().flatten()
     }
 
     #[cfg(test)]
     pub fn contains(&self, ip: IpAddr) -> bool {
-        self.cache
-            .lock()
-            .map(|c| c.contains_key(&ip))
-            .unwrap_or(false)
+        cache_lock(&self.cache).contains_key(&ip)
     }
 
     #[cfg(test)]
-    pub fn insert_test(&self, ip: IpAddr, name: Option<String>) {
-        self.cache.lock().expect("dns cache").insert(ip, name);
+    pub fn insert_test(&self, ip: IpAddr, name: Option<Resolved>) {
+        cache_lock(&self.cache).insert(ip, name);
     }
 }
 
@@ -77,10 +81,33 @@ impl Default for Resolver {
     }
 }
 
-pub fn lookup_ip(ip: IpAddr) -> Option<String> {
+fn socket_ipv4(ip: IpAddr) -> Option<Ipv4Addr> {
+    match ip {
+        IpAddr::V4(v) => Some(v),
+        IpAddr::V6(v) => v.to_ipv4_mapped(),
+    }
+}
+
+fn forward_ipv4(host: &str) -> Option<Ipv4Addr> {
+    (host, 0u16)
+        .to_socket_addrs()
+        .ok()?
+        .find_map(|sa| match sa.ip() {
+            IpAddr::V4(v) => Some(v),
+            _ => None,
+        })
+}
+
+pub fn lookup_ip(ip: IpAddr) -> Option<Resolved> {
     if ip.is_unspecified() {
         return None;
     }
+    let host = reverse_dns(ip)?;
+    let ipv4 = socket_ipv4(ip).or_else(|| forward_ipv4(&host));
+    Some(Resolved { host, ipv4 })
+}
+
+fn reverse_dns(ip: IpAddr) -> Option<String> {
     let sa = SocketAddr::new(ip, 0);
     let mut host = [0i8; 1025];
     let ret = unsafe {
@@ -156,7 +183,15 @@ mod tests {
     fn fake_insert_is_returned() {
         let r = Resolver::new();
         let ip = IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4));
-        r.insert_test(ip, Some("example.test".into()));
-        assert_eq!(r.get(ip).as_deref(), Some("example.test"));
+        r.insert_test(
+            ip,
+            Some(Resolved {
+                host: "example.test".into(),
+                ipv4: Some(Ipv4Addr::new(1, 2, 3, 4)),
+            }),
+        );
+        let got = r.get(ip).expect("cached");
+        assert_eq!(got.host, "example.test");
+        assert_eq!(got.ipv4, Some(Ipv4Addr::new(1, 2, 3, 4)));
     }
 }
