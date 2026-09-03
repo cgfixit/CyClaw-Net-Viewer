@@ -1,6 +1,8 @@
 # NetBoard design
 
-TCPView for Darwin. Official color rules from [Microsoft Learn — TCPView](https://learn.microsoft.com/en-us/sysinternals/downloads/tcpview): new = green, state change = yellow, deleted = red. NetBoard splits new into **outgoing** (green) and **incoming/listen** (blue).
+TCPView for Darwin. Official event colors from [Microsoft Learn — TCPView](https://learn.microsoft.com/en-us/sysinternals/downloads/tcpview): new = green, state change = yellow, deleted = red. NetBoard splits new into **outgoing** (green) and **incoming/listen** (blue).
+
+**Off-box remotes** (any TCP/UDP peer that is not unspecified and not loopback) stay **orange** while they exist, so a telemetry-kill watch can see phone-home without waiting for a new/delete flash. Event colors still win. ICMP/ping is not in the socket table.
 
 ## Snapshot
 

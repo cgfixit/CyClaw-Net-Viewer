@@ -9,7 +9,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::diff::{diff, Highlight, Row};
 use crate::dns::Resolver;
 use crate::kill;
-use crate::snapshot::{fmt_addr, snapshot, EndpointKey, Proto, TcpState};
+use crate::snapshot::{fmt_addr, is_offbox, snapshot, EndpointKey, Proto, TcpState};
 
 const BG_NEW_OUT: Color32 = Color32::from_rgb(0xC6, 0xEF, 0xCE);
 const FG_NEW_OUT: Color32 = Color32::from_rgb(0x00, 0x61, 0x00);
@@ -19,6 +19,8 @@ const BG_CHANGED: Color32 = Color32::from_rgb(0xFF, 0xEB, 0x9C);
 const FG_CHANGED: Color32 = Color32::from_rgb(0x9C, 0x57, 0x00);
 const BG_DELETED: Color32 = Color32::from_rgb(0xFF, 0xC7, 0xCE);
 const FG_DELETED: Color32 = Color32::from_rgb(0x9C, 0x00, 0x06);
+const BG_OFFBOX: Color32 = Color32::from_rgb(0xF8, 0xCB, 0xAD);
+const FG_OFFBOX: Color32 = Color32::from_rgb(0x84, 0x3C, 0x0B);
 
 struct Shared {
     rows: Mutex<Vec<Row>>,
@@ -50,6 +52,8 @@ pub struct NetBoardApp {
     selected: Option<EndpointKey>,
     show_udp: bool,
     show_listen: bool,
+    color_offbox: bool,
+    offbox_only: bool,
     show_about: bool,
     pending_kill: Option<(u32, String)>,
     last_save: Option<String>,
@@ -83,6 +87,8 @@ impl NetBoardApp {
             selected: None,
             show_udp: true,
             show_listen: true,
+            color_offbox: true,
+            offbox_only: false,
             show_about: false,
             pending_kill: None,
             last_save: None,
@@ -131,12 +137,17 @@ fn wait_tick(shared: &Shared) {
     }
 }
 
-fn hl_colors(h: Highlight) -> Option<(Color32, Color32)> {
+fn hl_colors(
+    h: Highlight,
+    remote: std::net::SocketAddr,
+    color_offbox: bool,
+) -> Option<(Color32, Color32)> {
     match h {
         Highlight::NewOut => Some((BG_NEW_OUT, FG_NEW_OUT)),
         Highlight::NewIn => Some((BG_NEW_IN, FG_NEW_IN)),
         Highlight::Changed => Some((BG_CHANGED, FG_CHANGED)),
         Highlight::Deleted => Some((BG_DELETED, FG_DELETED)),
+        Highlight::None if color_offbox && is_offbox(remote) => Some((BG_OFFBOX, FG_OFFBOX)),
         Highlight::None => None,
     }
 }
@@ -187,6 +198,8 @@ impl eframe::App for NetBoardApp {
                     self.shared.kick.store(true, Ordering::Relaxed);
                 }
                 ui.checkbox(&mut self.resolve_names, "Resolve names");
+                ui.checkbox(&mut self.color_offbox, "Color remotes");
+                ui.checkbox(&mut self.offbox_only, "Off-box only");
                 ui.label("Rate");
                 egui::ComboBox::from_id_salt("rate")
                     .selected_text(rate_label(self.interval_choice))
@@ -209,7 +222,11 @@ impl eframe::App for NetBoardApp {
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("{} endpoints", visible.len()));
+                let off = visible
+                    .iter()
+                    .filter(|r| is_offbox(r.endpoint.key.remote))
+                    .count();
+                ui.label(format!("{} endpoints · {} off-box", visible.len(), off));
                 if paused {
                     ui.label("paused");
                 }
@@ -293,6 +310,8 @@ impl NetBoardApp {
                 ui.checkbox(&mut self.resolve_names, "Resolve names");
                 ui.checkbox(&mut self.show_listen, "Show listeners");
                 ui.checkbox(&mut self.show_udp, "Show UDP");
+                ui.checkbox(&mut self.color_offbox, "Color remotes");
+                ui.checkbox(&mut self.offbox_only, "Off-box only");
                 ui.separator();
                 ui.label("Refresh rate");
                 for ms in [500u64, 1000, 2000, 5000] {
@@ -368,10 +387,11 @@ impl NetBoardApp {
                     let r = &visible[i];
                     let selected = self.selected.as_ref() == Some(&r.endpoint.key);
                     row.set_selected(selected);
-                    let (bg, fg) = match hl_colors(r.highlight) {
-                        Some(c) => c,
-                        None => (Color32::TRANSPARENT, default_fg),
-                    };
+                    let (bg, fg) =
+                        match hl_colors(r.highlight, r.endpoint.key.remote, self.color_offbox) {
+                            Some(c) => c,
+                            None => (Color32::TRANSPARENT, default_fg),
+                        };
                     let local = self.fmt_ep(r.endpoint.key.local);
                     let remote = self.fmt_ep(r.endpoint.key.remote);
                     let pid_s = r.endpoint.key.pid.to_string();
@@ -472,6 +492,9 @@ impl NetBoardApp {
                 if !self.show_listen && r.endpoint.dir == crate::Dir::Listen {
                     return false;
                 }
+                if self.offbox_only && !is_offbox(r.endpoint.key.remote) {
+                    return false;
+                }
                 if f.is_empty() {
                     return true;
                 }
@@ -565,6 +588,8 @@ impl NetBoardApp {
                     ui.label(RichText::new("NetBoard 0.1.0").strong());
                     ui.label("Live TCP/UDP endpoints on macOS.");
                     ui.label("MIT. Not affiliated with Microsoft or Sysinternals.");
+                    ui.label("Orange = TCP/UDP to an off-box remote (loopback/* stay uncolored). Event colors override: green new out, blue new in, yellow state change, red gone.");
+                    ui.label("ICMP/ping is not a TCP/UDP socket and will not appear.");
                     ui.label("Darwin cannot delete another process's TCB; Close Connection terminates the owning process after confirm.");
                 });
         }

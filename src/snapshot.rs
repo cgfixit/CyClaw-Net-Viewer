@@ -248,6 +248,23 @@ fn buf_to_string(buf: &mut [u8], n: i32) -> String {
         .into_owned()
 }
 
+/// True when the peer is off this machine (not unspecified, not loopback).
+/// Used to color local→remote rows for telemetry-kill watching.
+pub fn is_offbox(addr: SocketAddr) -> bool {
+    match addr.ip() {
+        IpAddr::V4(v) => !v.is_unspecified() && !v.is_loopback(),
+        IpAddr::V6(v) => {
+            if v.is_unspecified() || v.is_loopback() {
+                return false;
+            }
+            if let Some(v4) = v.to_ipv4_mapped() {
+                return !v4.is_unspecified() && !v4.is_loopback();
+            }
+            true
+        }
+    }
+}
+
 pub fn fmt_addr(addr: SocketAddr, name: Option<&str>) -> String {
     if addr.ip().is_unspecified() {
         return format!("*:{}", addr.port());
@@ -275,7 +292,7 @@ pub fn csv_escape(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, SocketAddrV4};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
 
     fn sa(port: u16) -> SocketAddr {
         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
@@ -283,6 +300,25 @@ mod tests {
 
     fn unspecified() -> SocketAddr {
         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
+    }
+
+    #[test]
+    fn offbox_is_remote_not_loopback() {
+        assert!(!is_offbox(unspecified()));
+        assert!(!is_offbox(sa(443)));
+        assert!(is_offbox(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(8, 8, 8, 8),
+            443
+        ))));
+        assert!(is_offbox(SocketAddr::V4(SocketAddrV4::new(
+            Ipv4Addr::new(10, 0, 0, 1),
+            443
+        ))));
+        let mapped_loop = SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 1)),
+            1,
+        );
+        assert!(!is_offbox(mapped_loop));
     }
 
     #[test]

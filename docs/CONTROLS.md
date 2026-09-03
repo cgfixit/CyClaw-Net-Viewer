@@ -3,6 +3,8 @@
 | Key / click | Action |
 |---|---|
 | Filter box | substring on process, PID, addrs, state, path |
+| Color remotes | orange fill on off-box peers (default on) |
+| Off-box only | hide listeners / loopback / `*:*` |
 | Space | pause / resume (ignored while filter focused) |
 | R | refresh now |
 | N | toggle reverse DNS |
