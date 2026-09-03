@@ -12,5 +12,5 @@
 | Click header | sort (click again reverses) |
 | Click row | select |
 | Right-click row | copy line, copy remote, terminate, reveal in Finder |
-| File → Save CSV | write `netboard-YYYYMMDD-HHMMSS.csv` in the current directory |
+| File → Save CSV | write `cyclaw-net-viewer-YYYYMMDD-HHMMSS.csv` in the current directory |
 | File → Close Connection | same as terminate; enabled only for ESTABLISHED TCP |

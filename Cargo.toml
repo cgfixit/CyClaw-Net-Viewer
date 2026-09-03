@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.0"
 license = "MIT"
-description = "Live TCP/UDP endpoint viewer for macOS (TCPView-class)"
+description = "CyClaw-Net-Viewer: live TCP/UDP endpoints on macOS (TCPView-class)"
 
 [dependencies]
 eframe = "=0.31.1"

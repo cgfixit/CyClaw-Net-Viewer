@@ -130,7 +130,7 @@ fn trunc(s: &str, n: usize) -> String {
 
 fn print_help() {
     eprintln!(
-        "NetBoard — Darwin TCP/UDP endpoint viewer\n\
+        "CyClaw-Net-Viewer — Darwin TCP/UDP endpoint viewer\n\
          \n\
          GUI:  netboard\n\
          CLI:  netboard --cli [-a] [-c] [-n] [process|pid]\n\

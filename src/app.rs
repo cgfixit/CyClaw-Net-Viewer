@@ -1,15 +1,18 @@
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
-use eframe::egui::{self, Color32, Key, RichText, Sense};
+use eframe::egui::{self, Color32, Key, RichText, Sense, TextEdit, Vec2};
 use egui_extras::{Column, TableBuilder};
 
 use crate::diff::{diff, Highlight, Row};
 use crate::dns::Resolver;
 use crate::kill;
 use crate::snapshot::{fmt_addr, is_offbox, snapshot, EndpointKey, Proto, TcpState};
+
+pub const APP_TITLE: &str = "CyClaw-Net-Viewer";
 
 const BG_NEW_OUT: Color32 = Color32::from_rgb(0xC6, 0xEF, 0xCE);
 const FG_NEW_OUT: Color32 = Color32::from_rgb(0x00, 0x61, 0x00);
@@ -21,6 +24,21 @@ const BG_DELETED: Color32 = Color32::from_rgb(0xFF, 0xC7, 0xCE);
 const FG_DELETED: Color32 = Color32::from_rgb(0x9C, 0x00, 0x06);
 const BG_OFFBOX: Color32 = Color32::from_rgb(0xF8, 0xCB, 0xAD);
 const FG_OFFBOX: Color32 = Color32::from_rgb(0x84, 0x3C, 0x0B);
+
+const BG_NEW_OUT_DARK: Color32 = Color32::from_rgb(0x43, 0xA0, 0x47);
+const FG_NEW_OUT_DARK: Color32 = Color32::from_rgb(0xE8, 0xF5, 0xE9);
+const BG_NEW_IN_DARK: Color32 = Color32::from_rgb(0x42, 0xA5, 0xF5);
+const FG_NEW_IN_DARK: Color32 = Color32::from_rgb(0xE3, 0xF2, 0xFD);
+const BG_CHANGED_DARK: Color32 = Color32::from_rgb(0xFF, 0xB7, 0x4D);
+const FG_CHANGED_DARK: Color32 = Color32::from_rgb(0x3E, 0x27, 0x23);
+const BG_DELETED_DARK: Color32 = Color32::from_rgb(0xEF, 0x53, 0x50);
+const FG_DELETED_DARK: Color32 = Color32::from_rgb(0xFF, 0xEB, 0xEE);
+const BG_OFFBOX_DARK: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x65);
+const FG_OFFBOX_DARK: Color32 = Color32::from_rgb(0x3E, 0x27, 0x23);
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 struct Shared {
     rows: Mutex<Vec<Row>>,
@@ -102,15 +120,19 @@ fn snap_loop(shared: Arc<Shared>, ctx: egui::Context) {
     let mut prev: Vec<Row> = Vec::new();
     loop {
         wait_tick(&shared);
-        match snapshot() {
-            Ok(eps) => {
+        let snapped = catch_unwind(AssertUnwindSafe(snapshot));
+        match snapped {
+            Ok(Ok(eps)) => {
                 let next = diff(&prev, &eps);
                 prev = next.clone();
-                *shared.rows.lock().expect("rows") = next;
-                *shared.err.lock().expect("err") = None;
+                *lock(&shared.rows) = next;
+                *lock(&shared.err) = None;
             }
-            Err(e) => {
-                *shared.err.lock().expect("err") = Some(e.0);
+            Ok(Err(e)) => {
+                *lock(&shared.err) = Some(e.0);
+            }
+            Err(_) => {
+                *lock(&shared.err) = Some("snapshot panicked; showing last good rows".into());
             }
         }
         ctx.request_repaint();
@@ -141,13 +163,36 @@ fn hl_colors(
     h: Highlight,
     remote: std::net::SocketAddr,
     color_offbox: bool,
+    dark: bool,
 ) -> Option<(Color32, Color32)> {
+    let pair = |light: (Color32, Color32), darkp: (Color32, Color32)| {
+        if dark {
+            darkp
+        } else {
+            light
+        }
+    };
     match h {
-        Highlight::NewOut => Some((BG_NEW_OUT, FG_NEW_OUT)),
-        Highlight::NewIn => Some((BG_NEW_IN, FG_NEW_IN)),
-        Highlight::Changed => Some((BG_CHANGED, FG_CHANGED)),
-        Highlight::Deleted => Some((BG_DELETED, FG_DELETED)),
-        Highlight::None if color_offbox && is_offbox(remote) => Some((BG_OFFBOX, FG_OFFBOX)),
+        Highlight::NewOut => Some(pair(
+            (BG_NEW_OUT, FG_NEW_OUT),
+            (BG_NEW_OUT_DARK, FG_NEW_OUT_DARK),
+        )),
+        Highlight::NewIn => Some(pair(
+            (BG_NEW_IN, FG_NEW_IN),
+            (BG_NEW_IN_DARK, FG_NEW_IN_DARK),
+        )),
+        Highlight::Changed => Some(pair(
+            (BG_CHANGED, FG_CHANGED),
+            (BG_CHANGED_DARK, FG_CHANGED_DARK),
+        )),
+        Highlight::Deleted => Some(pair(
+            (BG_DELETED, FG_DELETED),
+            (BG_DELETED_DARK, FG_DELETED_DARK),
+        )),
+        Highlight::None if color_offbox && is_offbox(remote) => Some(pair(
+            (BG_OFFBOX, FG_OFFBOX),
+            (BG_OFFBOX_DARK, FG_OFFBOX_DARK),
+        )),
         Highlight::None => None,
     }
 }
@@ -157,11 +202,11 @@ pub fn run() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 720.0])
             .with_min_inner_size([800.0, 400.0])
-            .with_title("NetBoard"),
+            .with_title(APP_TITLE),
         ..Default::default()
     };
     eframe::run_native(
-        "NetBoard",
+        APP_TITLE,
         opts,
         Box::new(|cc| Ok(Box::new(NetBoardApp::new(cc)))),
     )
@@ -171,8 +216,8 @@ impl eframe::App for NetBoardApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.hotkeys(ctx);
 
-        let rows = self.shared.rows.lock().expect("rows").clone();
-        let err = self.shared.err.lock().expect("err").clone();
+        let rows = lock(&self.shared.rows).clone();
+        let err = lock(&self.shared.err).clone();
         let paused = self.shared.paused.load(Ordering::Relaxed);
 
         for r in &rows {
@@ -214,8 +259,11 @@ impl eframe::App for NetBoardApp {
                             }
                         }
                     });
-                ui.label("Filter");
-                let filter = ui.text_edit_singleline(&mut self.filter);
+                let filter = ui.add(
+                    TextEdit::singleline(&mut self.filter)
+                        .hint_text("Filter process, PID, host, port…")
+                        .desired_width(240.0),
+                );
                 self.filter_focused = filter.has_focus();
             });
         });
@@ -230,10 +278,14 @@ impl eframe::App for NetBoardApp {
                 if paused {
                     ui.label("paused");
                 }
+                ui.separator();
+                legend(ui, ui.visuals().dark_mode);
                 if let Some(e) = &err {
+                    ui.separator();
                     ui.colored_label(Color32::RED, e);
                 }
                 if let Some(s) = &self.last_save {
+                    ui.separator();
                     ui.label(s);
                 }
             });
@@ -334,6 +386,7 @@ impl NetBoardApp {
     }
 
     fn table(&mut self, ui: &mut egui::Ui, visible: &[Row]) {
+        let dark = ui.visuals().dark_mode;
         let default_fg = ui.visuals().text_color();
         let mut clicked: Option<EndpointKey> = None;
         let mut kill: Option<(u32, String)> = None;
@@ -371,7 +424,7 @@ impl NetBoardApp {
             .column(Column::initial(220.0))
             .column(Column::initial(110.0))
             .column(Column::remainder())
-            .header(22.0, |mut row| {
+            .header(24.0, |mut row| {
                 row.col(|ui| header(ui, SortCol::Process, "Process"));
                 row.col(|ui| header(ui, SortCol::Pid, "PID"));
                 row.col(|ui| header(ui, SortCol::Proto, "Proto"));
@@ -387,30 +440,38 @@ impl NetBoardApp {
                     let r = &visible[i];
                     let selected = self.selected.as_ref() == Some(&r.endpoint.key);
                     row.set_selected(selected);
-                    let (bg, fg) =
-                        match hl_colors(r.highlight, r.endpoint.key.remote, self.color_offbox) {
-                            Some(c) => c,
-                            None => (Color32::TRANSPARENT, default_fg),
-                        };
+                    let (bg, fg) = match hl_colors(
+                        r.highlight,
+                        r.endpoint.key.remote,
+                        self.color_offbox,
+                        dark,
+                    ) {
+                        Some(c) => c,
+                        None => (Color32::TRANSPARENT, default_fg),
+                    };
                     let local = self.fmt_ep(r.endpoint.key.local);
                     let remote = self.fmt_ep(r.endpoint.key.remote);
                     let pid_s = r.endpoint.key.pid.to_string();
                     let cells = [
-                        r.endpoint.process.as_str(),
-                        pid_s.as_str(),
-                        r.endpoint.proto_label(),
-                        r.endpoint.dir_label(),
-                        local.as_str(),
-                        remote.as_str(),
-                        r.endpoint.state_label(),
-                        r.endpoint.path.as_str(),
+                        (r.endpoint.process.as_str(), false),
+                        (pid_s.as_str(), true),
+                        (r.endpoint.proto_label(), true),
+                        (r.endpoint.dir_label(), false),
+                        (local.as_str(), true),
+                        (remote.as_str(), true),
+                        (r.endpoint.state_label(), true),
+                        (r.endpoint.path.as_str(), false),
                     ];
-                    for c in cells {
+                    for (c, mono) in cells {
                         row.col(|ui| {
                             if bg != Color32::TRANSPARENT {
                                 ui.painter().rect_filled(ui.max_rect(), 0.0, bg);
                             }
-                            ui.colored_label(fg, c);
+                            let mut t = RichText::new(c).color(fg);
+                            if mono {
+                                t = t.monospace();
+                            }
+                            ui.label(t);
                         });
                     }
                     let resp = row.response();
@@ -548,7 +609,7 @@ impl NetBoardApp {
     }
 
     fn ask_kill_selected(&mut self) {
-        let rows = self.shared.rows.lock().expect("rows").clone();
+        let rows = lock(&self.shared.rows).clone();
         let vis = self.visible(&rows);
         if let Some(r) = self.selected_row(&vis) {
             self.pending_kill = Some((r.endpoint.key.pid, r.endpoint.process.clone()));
@@ -581,12 +642,12 @@ impl NetBoardApp {
 
     fn modals(&mut self, ctx: &egui::Context) {
         if self.show_about {
-            egui::Window::new("About NetBoard")
+            egui::Window::new(format!("About {APP_TITLE}"))
                 .collapsible(false)
                 .open(&mut self.show_about)
                 .show(ctx, |ui| {
-                    ui.label(RichText::new("NetBoard 0.1.0").strong());
-                    ui.label("Live TCP/UDP endpoints on macOS.");
+                    ui.label(RichText::new(format!("{APP_TITLE} 0.1.0")).strong());
+                    ui.label("Live TCP/UDP endpoints on macOS, for CyClaw telemetry-kill watching.");
                     ui.label("MIT. Not affiliated with Microsoft or Sysinternals.");
                     ui.label("Orange = TCP/UDP to an off-box remote (loopback/* stay uncolored). Event colors override: green new out, blue new in, yellow state change, red gone.");
                     ui.label("ICMP/ping is not a TCP/UDP socket and will not appear.");
@@ -622,6 +683,21 @@ impl NetBoardApp {
     }
 }
 
+fn legend(ui: &mut egui::Ui, dark: bool) {
+    let items = [
+        ("New out", if dark { BG_NEW_OUT_DARK } else { BG_NEW_OUT }),
+        ("New in", if dark { BG_NEW_IN_DARK } else { BG_NEW_IN }),
+        ("Changed", if dark { BG_CHANGED_DARK } else { BG_CHANGED }),
+        ("Gone", if dark { BG_DELETED_DARK } else { BG_DELETED }),
+        ("Off-box", if dark { BG_OFFBOX_DARK } else { BG_OFFBOX }),
+    ];
+    for (label, color) in items {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), Sense::hover());
+        ui.painter().rect_filled(rect, 2.0, color);
+        ui.label(label);
+    }
+}
+
 fn rate_label(ms: u64) -> &'static str {
     match ms {
         500 => "0.5s",
@@ -636,11 +712,11 @@ fn csv_filename() -> String {
     let t = unsafe { libc::time(std::ptr::null_mut()) };
     let ptr = unsafe { libc::localtime(&t) };
     if ptr.is_null() {
-        return "netboard.csv".into();
+        return "cyclaw-net-viewer.csv".into();
     }
     let tm = unsafe { *ptr };
     format!(
-        "netboard-{:04}{:02}{:02}-{:02}{:02}{:02}.csv",
+        "cyclaw-net-viewer-{:04}{:02}{:02}-{:02}{:02}{:02}.csv",
         tm.tm_year + 1900,
         tm.tm_mon + 1,
         tm.tm_mday,
