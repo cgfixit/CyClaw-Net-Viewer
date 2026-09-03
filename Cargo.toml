@@ -1,0 +1,33 @@
+[package]
+name = "netboard"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85.0"
+license = "MIT"
+description = "Live TCP/UDP endpoint viewer for macOS (TCPView-class)"
+
+[dependencies]
+eframe = "=0.31.1"
+egui_extras = { version = "=0.31.1", default-features = false }
+netstat2 = "0.11"
+libc = "0.2"
+# eframe 0.31 pulls crates whose latest patch needs rustc > 1.85
+image = { version = "=0.25.6", default-features = false, features = ["png"] }
+url = "=2.5.3"
+idna_adapter = "=1.2.1"
+writeable = "=0.6.1"
+icu_collections = "=2.0.0"
+icu_locale_core = "=2.0.0"
+icu_normalizer = "=2.0.0"
+icu_normalizer_data = "=2.0.0"
+icu_properties = "=2.0.0"
+icu_properties_data = "=2.0.0"
+icu_provider = "=2.0.0"
+
+[lib]
+name = "netboard"
+path = "src/lib.rs"
+
+[[bin]]
+name = "netboard"
+path = "src/main.rs"
