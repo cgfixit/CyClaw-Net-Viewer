@@ -4,7 +4,11 @@ Report vulnerabilities privately via GitHub Security Advisories on [cgfixit/Mac-
 
 This tool lists other processes' sockets on purpose. Do not enable App Sandbox. There is no bounty and no SLA.
 
-`cargo audit` runs weekly on `Cargo.lock`. Rustc is pinned at 1.85.0. Do not float `eframe` without checking that pin still builds.
+`cargo audit` runs weekly on `Cargo.lock`, on relevant PRs, and on relevant
+`master` pushes. Rustc is pinned at 1.85.0. Do not float `eframe` without
+checking that pin still builds. The audit runs directly in CI with read-only
+permissions and preserves advisory failures; it does not publish a separate
+check run requiring write access.
 
 ## Runtime boundaries
 
@@ -42,3 +46,12 @@ does not authenticate a publisher. Do not turn off Gatekeeper globally.
 
 See [the initialization review](docs/INITIAL_REVIEW.md) for the scope and
 remaining limitations of the repository review.
+
+## Known dependency advisories (2026-09-06)
+
+The full lockfile audit reports `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195`
+against `quick-xml 0.30.0`, pulled through the Linux/BSD accessibility stack.
+It is absent from both supported macOS target dependency trees. No advisory
+ignore has been added: the full lockfile Audit check remains failing until
+the upstream chain can be updated. See the review for evidence and follow-up.
+The audit also reports unmaintained `paste` and `ttf-parser` packages.

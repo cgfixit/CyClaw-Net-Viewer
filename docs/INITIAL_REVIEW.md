@@ -24,6 +24,36 @@ test or an audit of every transitive dependency or historical binary.
   and DNS, with quoting and prefix regression cases.
 - Replaced truncating CSV writes with exclusive private creation and tests
   for collisions, existing symlinks, dangling symlinks, and permissions.
+- Replaced the yanked `url 2.5.3` pin with `2.5.8` (declared MSRV 1.63),
+  updating only that package entry in Cargo.lock. The compiler pin stays 1.85.0.
+- Ran cargo-audit directly with a pinned tool version to avoid the former
+  audit action's attempt to publish check runs with a read-only token.
+
+## Dependency audit follow-up
+
+The audit found [RUSTSEC-2026-0194](https://rustsec.org/advisories/RUSTSEC-2026-0194.html)
+and [RUSTSEC-2026-0195](https://rustsec.org/advisories/RUSTSEC-2026-0195.html)
+in `quick-xml 0.30.0`. Both require `quick-xml >= 0.41.0` for a fix.
+The lockfile chain is `accesskit_winit -> accesskit_unix -> atspi ->
+atspi-common -> zbus-lockstep / zbus-lockstep-macros -> zbus_xml 4.0.0 ->
+quick-xml 0.30.0`. The separate Wayland chain already uses quick-xml 0.41.0.
+
+`accesskit_winit 0.23.1` declares `accesskit_unix` only for Linux and BSD
+targets. These commands both report `nothing to print`:
+
+```sh
+cargo tree --locked --target aarch64-apple-darwin -i quick-xml@0.30.0
+cargo tree --locked --target x86_64-apple-darwin -i quick-xml@0.30.0
+```
+
+This is evidence of no build dependency path for the vulnerable version in
+the supported macOS targets, not a fix to the full lockfile. The old
+`zbus_xml` major cannot accept quick-xml 0.41 as a lockfile-only update.
+Retain the audit failure without ignores; follow up with an upstream
+accessibility dependency migration that preserves macOS accessibility and
+validates the compiler requirement. Do not disable accessibility just to
+remove an advisory. Unmaintained `paste` and `ttf-parser` also need upstream
+tracking. The yanked URL warning is addressed by the patch update above.
 
 ## Remaining limits
 

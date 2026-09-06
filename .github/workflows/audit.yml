@@ -5,6 +5,7 @@ on:
   schedule:
     - cron: "17 11 * * 1"
   push:
+    branches: [master]
     paths:
       - Cargo.lock
       - Cargo.toml
@@ -35,6 +36,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install pinned audit tool
+        run: cargo install cargo-audit --locked --version 0.22.2
+      - name: Audit all locked dependencies
+        run: cargo audit
