@@ -29,7 +29,7 @@ jobs:
         run: |
           test -x dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
           lipo -info dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: CyClaw-Net-Viewer.app
           path: dist/CyClaw-Net-Viewer.app
