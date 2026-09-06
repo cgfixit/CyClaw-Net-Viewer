@@ -1,9 +1,8 @@
 # CyClaw-Net-Viewer
 
-[![CI](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/ci.yml/badge.svg)](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/github/license/cgfixit/Mac-NetViewer-EZview)](LICENSE)
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](docs/BUILD.md)
+[![License: MIT](https://img.shields.io/github/license/cgfixit/Mac-NetViewer-EZview)](LICENSE)
 
 Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Name resolution is off by default in the GUI; enabling **Resolve names**, or running the CLI without `-n`, sends PTR/A queries through the system resolver. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
 
@@ -11,11 +10,7 @@ Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository 
 
 ## App screenshot
 
-A native macOS **Cmd-Shift-4** capture of the live table is not in this
-repository yet. The previous hero was a phone JPEG with Local and Remote
-painted over; that file is retired. Until a real PNG lands, the columns
-look like this (numeric addresses, same as CLI `-n` / **Resolve names**
-off — do not paint over Local or Remote):
+<img src="https://github.com/cgfixit/CyClaw-Net-Viewer/blob/master/docs/image.jpg">
 
 | Process | PID | Proto | Dir | Local | Remote | State | Path |
 | --- | ---: | --- | --- | --- | --- | --- | --- |
