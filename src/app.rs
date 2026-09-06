@@ -14,34 +14,75 @@ use crate::snapshot::{fmt_addr, is_offbox, snapshot, EndpointKey, Proto, TcpStat
 
 pub const APP_TITLE: &str = "CyClaw-Net-Viewer";
 
-const BG_NEW_OUT: Color32 = Color32::from_rgb(0xC6, 0xEF, 0xCE);
-const FG_NEW_OUT: Color32 = Color32::from_rgb(0x00, 0x61, 0x00);
-const BG_NEW_IN: Color32 = Color32::from_rgb(0xBD, 0xD7, 0xEE);
-const FG_NEW_IN: Color32 = Color32::from_rgb(0x1F, 0x4E, 0x79);
-const BG_CHANGED: Color32 = Color32::from_rgb(0xFF, 0xEB, 0x9C);
-const FG_CHANGED: Color32 = Color32::from_rgb(0x9C, 0x57, 0x00);
-const BG_DELETED: Color32 = Color32::from_rgb(0xFF, 0xC7, 0xCE);
-const FG_DELETED: Color32 = Color32::from_rgb(0x9C, 0x00, 0x06);
-const BG_OFFBOX: Color32 = Color32::from_rgb(0xF8, 0xCB, 0xAD);
-const FG_OFFBOX: Color32 = Color32::from_rgb(0x84, 0x3C, 0x0B);
+struct HighlightPalette {
+    new_out: (Color32, Color32),
+    new_in: (Color32, Color32),
+    changed: (Color32, Color32),
+    deleted: (Color32, Color32),
+    offbox: (Color32, Color32),
+}
 
-const BG_NEW_OUT_DARK: Color32 = Color32::from_rgb(0x43, 0xA0, 0x47);
-const FG_NEW_OUT_DARK: Color32 = Color32::from_rgb(0xE8, 0xF5, 0xE9);
-const BG_NEW_IN_DARK: Color32 = Color32::from_rgb(0x42, 0xA5, 0xF5);
-const FG_NEW_IN_DARK: Color32 = Color32::from_rgb(0xE3, 0xF2, 0xFD);
-const BG_CHANGED_DARK: Color32 = Color32::from_rgb(0xFF, 0xB7, 0x4D);
-const FG_CHANGED_DARK: Color32 = Color32::from_rgb(0x3E, 0x27, 0x23);
-const BG_DELETED_DARK: Color32 = Color32::from_rgb(0xEF, 0x53, 0x50);
-const FG_DELETED_DARK: Color32 = Color32::from_rgb(0xFF, 0xEB, 0xEE);
-const BG_OFFBOX_DARK: Color32 = Color32::from_rgb(0xFF, 0x8A, 0x65);
-const FG_OFFBOX_DARK: Color32 = Color32::from_rgb(0x3E, 0x27, 0x23);
+impl HighlightPalette {
+    const LIGHT: Self = Self {
+        new_out: (
+            Color32::from_rgb(0xC6, 0xEF, 0xCE),
+            Color32::from_rgb(0x00, 0x61, 0x00),
+        ),
+        new_in: (
+            Color32::from_rgb(0xBD, 0xD7, 0xEE),
+            Color32::from_rgb(0x1F, 0x4E, 0x79),
+        ),
+        changed: (
+            Color32::from_rgb(0xFF, 0xEB, 0x9C),
+            Color32::from_rgb(0x9C, 0x57, 0x00),
+        ),
+        deleted: (
+            Color32::from_rgb(0xFF, 0xC7, 0xCE),
+            Color32::from_rgb(0x9C, 0x00, 0x06),
+        ),
+        offbox: (
+            Color32::from_rgb(0xF8, 0xCB, 0xAD),
+            Color32::from_rgb(0x84, 0x3C, 0x0B),
+        ),
+    };
+    const DARK: Self = Self {
+        new_out: (
+            Color32::from_rgb(0x43, 0xA0, 0x47),
+            Color32::from_rgb(0xE8, 0xF5, 0xE9),
+        ),
+        new_in: (
+            Color32::from_rgb(0x42, 0xA5, 0xF5),
+            Color32::from_rgb(0xE3, 0xF2, 0xFD),
+        ),
+        changed: (
+            Color32::from_rgb(0xFF, 0xB7, 0x4D),
+            Color32::from_rgb(0x3E, 0x27, 0x23),
+        ),
+        deleted: (
+            Color32::from_rgb(0xEF, 0x53, 0x50),
+            Color32::from_rgb(0xFF, 0xEB, 0xEE),
+        ),
+        offbox: (
+            Color32::from_rgb(0xFF, 0x8A, 0x65),
+            Color32::from_rgb(0x3E, 0x27, 0x23),
+        ),
+    };
+
+    fn for_mode(dark: bool) -> &'static Self {
+        if dark {
+            &Self::DARK
+        } else {
+            &Self::LIGHT
+        }
+    }
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 struct Shared {
-    rows: Mutex<Vec<Row>>,
+    rows: Mutex<Arc<Vec<Row>>>,
     err: Mutex<Option<String>>,
     paused: AtomicBool,
     interval_ms: AtomicU64,
@@ -82,7 +123,7 @@ pub struct NetBoardApp {
 impl NetBoardApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let shared = Arc::new(Shared {
-            rows: Mutex::new(Vec::new()),
+            rows: Mutex::new(Arc::new(Vec::new())),
             err: Mutex::new(None),
             paused: AtomicBool::new(false),
             interval_ms: AtomicU64::new(1000),
@@ -117,15 +158,18 @@ impl NetBoardApp {
 }
 
 fn snap_loop(shared: Arc<Shared>, ctx: egui::Context) {
-    let mut prev: Vec<Row> = Vec::new();
+    let mut prev = Arc::new(Vec::new());
     loop {
         wait_tick(&shared);
         let snapped = catch_unwind(AssertUnwindSafe(snapshot));
         match snapped {
             Ok(Ok(eps)) => {
-                let next = diff(&prev, &eps);
-                prev = next.clone();
-                *lock(&shared.rows) = next;
+                let next = Arc::new(diff(&prev, &eps));
+                // Publish only a complete immutable snapshot. Readers retain
+                // their Arc for a full frame; no row data is copied under lock.
+                let old = std::mem::replace(&mut *lock(&shared.rows), Arc::clone(&next));
+                drop(old); // Free old rows outside the publication lock.
+                prev = next;
                 *lock(&shared.err) = None;
             }
             Ok(Err(e)) => {
@@ -165,34 +209,13 @@ fn hl_colors(
     color_offbox: bool,
     dark: bool,
 ) -> Option<(Color32, Color32)> {
-    let pair = |light: (Color32, Color32), darkp: (Color32, Color32)| {
-        if dark {
-            darkp
-        } else {
-            light
-        }
-    };
+    let palette = HighlightPalette::for_mode(dark);
     match h {
-        Highlight::NewOut => Some(pair(
-            (BG_NEW_OUT, FG_NEW_OUT),
-            (BG_NEW_OUT_DARK, FG_NEW_OUT_DARK),
-        )),
-        Highlight::NewIn => Some(pair(
-            (BG_NEW_IN, FG_NEW_IN),
-            (BG_NEW_IN_DARK, FG_NEW_IN_DARK),
-        )),
-        Highlight::Changed => Some(pair(
-            (BG_CHANGED, FG_CHANGED),
-            (BG_CHANGED_DARK, FG_CHANGED_DARK),
-        )),
-        Highlight::Deleted => Some(pair(
-            (BG_DELETED, FG_DELETED),
-            (BG_DELETED_DARK, FG_DELETED_DARK),
-        )),
-        Highlight::None if color_offbox && is_offbox(remote) => Some(pair(
-            (BG_OFFBOX, FG_OFFBOX),
-            (BG_OFFBOX_DARK, FG_OFFBOX_DARK),
-        )),
+        Highlight::NewOut => Some(palette.new_out),
+        Highlight::NewIn => Some(palette.new_in),
+        Highlight::Changed => Some(palette.changed),
+        Highlight::Deleted => Some(palette.deleted),
+        Highlight::None if color_offbox && is_offbox(remote) => Some(palette.offbox),
         Highlight::None => None,
     }
 }
@@ -216,11 +239,11 @@ impl eframe::App for NetBoardApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.hotkeys(ctx);
 
-        let rows = lock(&self.shared.rows).clone();
+        let rows = Arc::clone(&lock(&self.shared.rows));
         let err = lock(&self.shared.err).clone();
         let paused = self.shared.paused.load(Ordering::Relaxed);
 
-        for r in &rows {
+        for r in rows.iter() {
             if self.resolve_names {
                 self.resolver.request(r.endpoint.key.local.ip());
                 self.resolver.request(r.endpoint.key.remote.ip());
@@ -340,7 +363,7 @@ impl NetBoardApp {
         }
     }
 
-    fn menu(&mut self, ui: &mut egui::Ui, visible: &[Row]) {
+    fn menu(&mut self, ui: &mut egui::Ui, visible: &[&Row]) {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Save CSV").clicked() {
@@ -385,7 +408,7 @@ impl NetBoardApp {
         });
     }
 
-    fn table(&mut self, ui: &mut egui::Ui, visible: &[Row]) {
+    fn table(&mut self, ui: &mut egui::Ui, visible: &[&Row]) {
         let dark = ui.visuals().dark_mode;
         let default_fg = ui.visuals().text_color();
         let mut clicked: Option<EndpointKey> = None;
@@ -547,7 +570,7 @@ impl NetBoardApp {
         }
     }
 
-    fn visible(&self, rows: &[Row]) -> Vec<Row> {
+    fn visible<'a>(&self, rows: &'a [Row]) -> Vec<&'a Row> {
         let f = self.filter.to_ascii_lowercase();
         rows.iter()
             .filter(|r| {
@@ -578,11 +601,10 @@ impl NetBoardApp {
                 );
                 blob.to_ascii_lowercase().contains(&f)
             })
-            .cloned()
             .collect()
     }
 
-    fn sort_rows(&self, rows: &mut [Row]) {
+    fn sort_rows(&self, rows: &mut [&Row]) {
         rows.sort_by(|a, b| {
             let ord = match self.sort {
                 SortCol::Process => a.endpoint.process.cmp(&b.endpoint.process),
@@ -602,25 +624,25 @@ impl NetBoardApp {
         });
     }
 
-    fn selected_row<'a>(&self, visible: &'a [Row]) -> Option<&'a Row> {
+    fn selected_row<'a>(&self, visible: &[&'a Row]) -> Option<&'a Row> {
         let k = self.selected.as_ref()?;
-        visible.iter().find(|r| &r.endpoint.key == k)
+        visible.iter().copied().find(|r| &r.endpoint.key == k)
     }
 
-    fn selected_established<'a>(&self, visible: &'a [Row]) -> Option<&'a Row> {
+    fn selected_established<'a>(&self, visible: &[&'a Row]) -> Option<&'a Row> {
         self.selected_row(visible)
             .filter(|r| r.endpoint.state == Some(TcpState::Established))
     }
 
     fn ask_kill_selected(&mut self) {
-        let rows = lock(&self.shared.rows).clone();
+        let rows = Arc::clone(&lock(&self.shared.rows));
         let vis = self.visible(&rows);
         if let Some(r) = self.selected_row(&vis) {
             self.pending_kill = Some((r.endpoint.key.pid, r.endpoint.process.clone()));
         }
     }
 
-    fn save_csv(&mut self, visible: &[Row]) {
+    fn save_csv(&mut self, visible: &[&Row]) {
         let name = csv_filename();
         let mut buf = String::from("Process,PID,Proto,Dir,Local,Remote,State,Path\n");
         for r in visible {
@@ -688,12 +710,13 @@ impl NetBoardApp {
 }
 
 fn legend(ui: &mut egui::Ui, dark: bool) {
+    let palette = HighlightPalette::for_mode(dark);
     let items = [
-        ("New out", if dark { BG_NEW_OUT_DARK } else { BG_NEW_OUT }),
-        ("New in", if dark { BG_NEW_IN_DARK } else { BG_NEW_IN }),
-        ("Changed", if dark { BG_CHANGED_DARK } else { BG_CHANGED }),
-        ("Gone", if dark { BG_DELETED_DARK } else { BG_DELETED }),
-        ("Off-box", if dark { BG_OFFBOX_DARK } else { BG_OFFBOX }),
+        ("New out", palette.new_out.0),
+        ("New in", palette.new_in.0),
+        ("Changed", palette.changed.0),
+        ("Gone", palette.deleted.0),
+        ("Off-box", palette.offbox.0),
     ];
     for (label, color) in items {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), Sense::hover());
@@ -713,12 +736,17 @@ fn rate_label(ms: u64) -> &'static str {
 }
 
 fn csv_filename() -> String {
+    // SAFETY: a null output pointer asks time() to return the value only.
     let t = unsafe { libc::time(std::ptr::null_mut()) };
-    let ptr = unsafe { libc::localtime(&t) };
+    let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
+    // SAFETY: both pointers are valid for the call. localtime_r writes to our
+    // own storage, avoiding localtime's shared static buffer across threads.
+    let ptr = unsafe { libc::localtime_r(&t, tm.as_mut_ptr()) };
     if ptr.is_null() {
         return "cyclaw-net-viewer.csv".into();
     }
-    let tm = unsafe { *ptr };
+    // SAFETY: the non-null return confirms the output was initialized.
+    let tm = unsafe { tm.assume_init() };
     format!(
         "cyclaw-net-viewer-{:04}{:02}{:02}-{:02}{:02}{:02}.csv",
         tm.tm_year + 1900,
@@ -728,4 +756,94 @@ fn csv_filename() -> String {
         tm.tm_min,
         tm.tm_sec
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filtering_sorting_and_selection_borrow_a_stable_frame() {
+        use crate::{Dir, Endpoint, IpVer};
+        let endpoint = |pid| Endpoint {
+            key: EndpointKey {
+                pid,
+                proto: Proto::Udp,
+                ip_ver: IpVer::V4,
+                local: "127.0.0.1:50000".parse().unwrap(),
+                remote: "0.0.0.0:0".parse().unwrap(),
+            },
+            state: None,
+            dir: Dir::Unknown,
+            process: "example".into(),
+            path: String::new(),
+        };
+        let initial = Arc::new(diff(&[], &[endpoint(2), endpoint(1)]));
+        let mut app = NetBoardApp {
+            shared: Arc::new(Shared {
+                rows: Mutex::new(Arc::clone(&initial)),
+                err: Mutex::new(None),
+                paused: AtomicBool::new(false),
+                interval_ms: AtomicU64::new(1000),
+                kick: AtomicBool::new(false),
+            }),
+            resolver: Resolver::new(),
+            resolve_names: false,
+            filter: "unknown".into(),
+            sort: SortCol::Pid,
+            sort_asc: true,
+            selected: Some(initial[0].endpoint.key.clone()),
+            show_udp: true,
+            show_listen: false,
+            color_offbox: true,
+            offbox_only: false,
+            show_about: false,
+            pending_kill: None,
+            last_save: None,
+            interval_choice: 1000,
+            filter_focused: false,
+        };
+        let frame = Arc::clone(&lock(&app.shared.rows));
+        assert!(Arc::ptr_eq(&initial, &frame));
+        let mut visible = app.visible(&frame);
+        app.sort_rows(&mut visible);
+        assert_eq!(visible.len(), 2); // Unknown UDP survives hiding listeners.
+        assert!(std::ptr::eq(visible[0], &frame[1]));
+        assert!(std::ptr::eq(app.selected_row(&visible).unwrap(), &frame[0]));
+        *lock(&app.shared.rows) = Arc::new(Vec::new());
+        assert_eq!(visible[1].endpoint.key.pid, 2); // Publication cannot change this frame.
+        app.show_udp = false;
+        assert!(app.visible(&frame).is_empty());
+    }
+
+    #[test]
+    fn both_palettes_cover_events_and_preserve_offbox_precedence() {
+        let remote = "192.0.2.1:443".parse().unwrap();
+        for dark in [false, true] {
+            let p = HighlightPalette::for_mode(dark);
+            for (highlight, expected) in [
+                (Highlight::NewIn, p.new_in),
+                (Highlight::NewOut, p.new_out),
+                (Highlight::Changed, p.changed),
+                (Highlight::Deleted, p.deleted),
+            ] {
+                assert_eq!(hl_colors(highlight, remote, true, dark), Some(expected));
+                assert_eq!(hl_colors(highlight, remote, false, dark), Some(expected));
+            }
+            assert_eq!(
+                hl_colors(Highlight::None, remote, true, dark),
+                Some(p.offbox)
+            );
+            assert_eq!(hl_colors(Highlight::None, remote, false, dark), None);
+            assert_eq!(
+                hl_colors(
+                    Highlight::None,
+                    "127.0.0.1:443".parse().unwrap(),
+                    true,
+                    dark
+                ),
+                None
+            );
+        }
+    }
 }

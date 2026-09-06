@@ -67,7 +67,11 @@ fn gone_lingers_two_ticks_then_drops() {
     let t1 = diff(&[], &[a]);
     assert_eq!(t1[0].highlight, Highlight::NewOut);
 
-    let t2 = diff(&t1, &[]);
+    let live = diff(&t1, &[t1[0].endpoint.clone()]);
+    assert_eq!(live[0].highlight, Highlight::None);
+    assert_eq!(live[0].linger, 0);
+
+    let t2 = diff(&live, &[]);
     assert_eq!(t2.len(), 1);
     assert_eq!(t2[0].highlight, Highlight::Deleted);
     assert_eq!(t2[0].linger, 2);
@@ -92,11 +96,25 @@ fn deleted_key_that_returns_is_new_not_changed() {
     assert_eq!(t3[0].highlight, Highlight::NewOut);
 }
 
-#[allow(dead_code)]
-fn _row(e: Endpoint, h: Highlight, linger: u8) -> Row {
-    Row {
-        endpoint: e,
-        highlight: h,
-        linger,
-    }
+#[test]
+fn expired_deleted_rows_do_not_underflow() {
+    let expired = Row {
+        endpoint: tcp(1, 50000, 443, TcpState::Established, Dir::Out),
+        highlight: Highlight::Deleted,
+        linger: 0,
+    };
+    assert!(diff(&[expired], &[]).is_empty());
+}
+
+#[test]
+fn unknown_direction_has_no_outbound_flash_but_still_lingers() {
+    let mut e = tcp(1, 50000, 0, TcpState::Established, Dir::Unknown);
+    e.key.proto = Proto::Udp;
+    e.state = None;
+    let rows = diff(&[], &[e]);
+    assert_eq!(rows[0].highlight, Highlight::None);
+    assert_eq!(rows[0].endpoint.dir_label(), "Unknown");
+    let gone = diff(&rows, &[]);
+    assert_eq!(gone[0].highlight, Highlight::Deleted);
+    assert_eq!(gone[0].linger, 2);
 }

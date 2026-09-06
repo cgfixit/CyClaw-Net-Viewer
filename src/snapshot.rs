@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::ffi::CStr;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use netstat2::{
@@ -23,6 +22,7 @@ pub enum Dir {
     In,
     Out,
     Listen,
+    Unknown,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -110,6 +110,7 @@ impl Endpoint {
             Dir::In => "In",
             Dir::Out => "Out",
             Dir::Listen => "Listen",
+            Dir::Unknown => "Unknown",
         }
     }
 
@@ -129,27 +130,43 @@ impl std::fmt::Display for SnapshotError {
 
 impl std::error::Error for SnapshotError {}
 
-/// Direction for one endpoint. `listen_ports` is `(pid, local_port)` of TCP LISTEN sockets.
+/// TCP uses the existing per-PID listening-port heuristic.
+/// UDP has no listening state: a concrete peer plus a matching local binding
+/// suggests In (a receiver), never proves packet direction. Match PID, family,
+/// port and address; a wildcard binding covers that family's local addresses.
+/// Missing peers, port zero, unknown owners or unmatched bindings mean Unknown,
+/// including client-style endpoints: a peer alone is not evidence of Out.
+/// netstat2 currently omits UDP peers, so real UDP snapshots remain Unknown.
 pub fn direction(
     proto: Proto,
     state: Option<TcpState>,
     pid: u32,
-    local_port: u16,
+    local: SocketAddr,
     remote: SocketAddr,
     listen_ports: &HashSet<(u32, u16)>,
+    udp_bindings: &HashSet<(u32, SocketAddr)>,
 ) -> Dir {
     match proto {
         Proto::Tcp => match state {
             Some(TcpState::Listen) => Dir::Listen,
             Some(TcpState::SynSent) => Dir::Out,
-            _ if listen_ports.contains(&(pid, local_port)) => Dir::In,
+            _ if listen_ports.contains(&(pid, local.port())) => Dir::In,
             _ => Dir::Out,
         },
         Proto::Udp => {
-            if remote.ip().is_unspecified() && remote.port() == 0 {
-                Dir::Listen
+            if pid == 0
+                || local.port() == 0
+                || remote.ip().is_unspecified()
+                || remote.port() == 0
+                || local.is_ipv4() != remote.is_ipv4()
+            {
+                return Dir::Unknown;
+            }
+            let wildcard = SocketAddr::new(unspecified_remote(local.ip()).ip(), local.port());
+            if udp_bindings.contains(&(pid, local)) || udp_bindings.contains(&(pid, wildcard)) {
+                Dir::In
             } else {
-                Dir::Out
+                Dir::Unknown
             }
         }
     }
@@ -163,6 +180,7 @@ pub fn snapshot() -> Result<Vec<Endpoint>, SnapshotError> {
 
     let mut names: HashMap<u32, (String, String)> = HashMap::new();
     let mut listen_ports: HashSet<(u32, u16)> = HashSet::new();
+    let mut udp_bindings = HashSet::new();
     let mut raw: Vec<(u32, Proto, SocketAddr, SocketAddr, Option<TcpState>)> =
         Vec::with_capacity(socks.len());
 
@@ -180,6 +198,11 @@ pub fn snapshot() -> Result<Vec<Endpoint>, SnapshotError> {
             }
             ProtocolSocketInfo::Udp(u) => {
                 let local = SocketAddr::new(u.local_addr, u.local_port);
+                // This is a binding, not proof of a UDP listener. The source
+                // does not expose peers, even for connected UDP sockets.
+                if pid != 0 && local.port() != 0 {
+                    udp_bindings.insert((pid, local));
+                }
                 let remote = unspecified_remote(u.local_addr);
                 raw.push((pid, Proto::Udp, local, remote, None));
             }
@@ -193,10 +216,20 @@ pub fn snapshot() -> Result<Vec<Endpoint>, SnapshotError> {
         } else {
             IpVer::V4
         };
-        let dir = direction(proto, state, pid, local.port(), remote, &listen_ports);
+        let dir = direction(
+            proto,
+            state,
+            pid,
+            local,
+            remote,
+            &listen_ports,
+            &udp_bindings,
+        );
         let (process, path) = if pid == 0 {
             ("?".into(), String::new())
         } else {
+            // Resolve each PID once per snapshot. Each Endpoint owns its strings
+            // after this cache is dropped; these per-row clones are intentional.
             names.entry(pid).or_insert_with(|| proc_names(pid)).clone()
         };
         let process = if process.is_empty() {
@@ -229,23 +262,31 @@ fn unspecified_remote(local: IpAddr) -> SocketAddr {
 }
 
 fn proc_names(pid: u32) -> (String, String) {
-    let mut name = [0u8; 64];
-    let mut path = [0u8; 4096];
-    let n = unsafe { libc::proc_name(pid as i32, name.as_mut_ptr() as *mut _, name.len() as u32) };
-    let p =
-        unsafe { libc::proc_pidpath(pid as i32, path.as_mut_ptr() as *mut _, path.len() as u32) };
-    (buf_to_string(&mut name, n), buf_to_string(&mut path, p))
+    let Ok(pid) = i32::try_from(pid) else {
+        return (String::new(), String::new());
+    };
+    // proc_name uses proc_bsdinfo.pbi_name (2 * MAXCOMLEN bytes), falling
+    // back to pbi_comm. This is a possibly truncated name, not a bundle ID.
+    // Keep a trailing zero even if the fixed-width copy fills pbi_name:
+    // libproc calls strlen on that copy before returning its byte count.
+    let mut name = [0u8; 2 * libc::MAXCOMLEN + 1];
+    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: writable buffers have exactly the advertised byte capacities;
+    // pid fits c_int, and neither API retains the pointer after returning.
+    let n = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+    // SAFETY: same buffer/lifetime contract, with the platform path capacity.
+    let p = unsafe { libc::proc_pidpath(pid, path.as_mut_ptr().cast(), path.len() as u32) };
+    (buf_to_string(&name, n), buf_to_string(&path, p))
 }
 
-fn buf_to_string(buf: &mut [u8], n: i32) -> String {
+fn buf_to_string(buf: &[u8], n: i32) -> String {
     if n <= 0 {
         return String::new();
     }
-    let end = (n as usize).min(buf.len().saturating_sub(1));
-    buf[end] = 0;
-    unsafe { CStr::from_ptr(buf.as_ptr() as *const _) }
-        .to_string_lossy()
-        .into_owned()
+    let bytes = &buf[..(n as usize).min(buf.len())];
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    // Bounded decoding also handles truncation without NUL and partial UTF-8.
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 /// True when the peer is off this machine (not unspecified, not loopback).
@@ -384,60 +425,118 @@ mod tests {
     }
 
     #[test]
-    fn direction_table() {
-        let mut listen = HashSet::new();
-        listen.insert((10, 443));
-        assert_eq!(
-            direction(
-                Proto::Tcp,
-                Some(TcpState::Listen),
+    fn tcp_direction_is_unchanged() {
+        let listen = HashSet::from([(10, 443)]);
+        let udp = HashSet::new();
+        for (state, pid, port, remote, expected) in [
+            (TcpState::Listen, 10, 443, unspecified(), Dir::Listen),
+            (TcpState::SynSent, 10, 443, sa(50000), Dir::Out),
+            (TcpState::Established, 10, 443, sa(50000), Dir::In),
+            (TcpState::Established, 12, 50001, sa(443), Dir::Out),
+        ] {
+            assert_eq!(
+                direction(
+                    Proto::Tcp,
+                    Some(state),
+                    pid,
+                    sa(port),
+                    remote,
+                    &listen,
+                    &udp
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn udp_direction_requires_peer_and_matching_binding() {
+        let tcp = HashSet::from([(10, 53)]);
+        let wildcard = SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 53);
+        let udp = HashSet::from([(10, wildcard), (11, sa(5353))]);
+        for (pid, local, remote, expected) in [
+            (10, sa(53), sa(50000), Dir::In),          // wildcard server binding
+            (11, sa(5353), sa(50000), Dir::In),        // exact server binding
+            (10, sa(50000), sa(53), Dir::Unknown),     // client-shaped, no evidence
+            (10, sa(53), unspecified(), Dir::Unknown), // current netstat2 data
+            (10, wildcard, sa(50000), Dir::In),
+            (
                 10,
-                443,
-                unspecified(),
-                &listen
+                sa(53),
+                SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 123),
+                Dir::Unknown,
             ),
-            Dir::Listen
-        );
-        assert_eq!(
-            direction(
-                Proto::Tcp,
-                Some(TcpState::SynSent),
+            (10, sa(53), sa(0), Dir::Unknown),
+            (10, sa(0), sa(53), Dir::Unknown),
+            (0, sa(53), sa(50000), Dir::Unknown),
+            (12, sa(53), sa(50000), Dir::Unknown), // different PID
+            (
                 11,
-                50000,
-                sa(443),
-                &listen
+                SocketAddr::new(Ipv4Addr::new(127, 0, 0, 2).into(), 5353),
+                sa(50000),
+                Dir::Unknown,
             ),
-            Dir::Out
-        );
+        ] {
+            assert_eq!(
+                direction(Proto::Udp, None, pid, local, remote, &tcp, &udp),
+                expected
+            );
+        }
         assert_eq!(
             direction(
-                Proto::Tcp,
-                Some(TcpState::Established),
+                Proto::Udp,
+                None,
                 10,
-                443,
+                sa(53),
                 sa(50000),
-                &listen
+                &tcp,
+                &HashSet::new()
             ),
+            Dir::Unknown
+        );
+    }
+
+    #[test]
+    fn udp_bindings_do_not_cross_address_families() {
+        let tcp = HashSet::new();
+        let local = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 53);
+        let peer = SocketAddr::new(Ipv6Addr::LOCALHOST.into(), 50000);
+        let v4 = HashSet::from([(10, SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), 53))]);
+        assert_eq!(
+            direction(Proto::Udp, None, 10, local, peer, &tcp, &v4),
+            Dir::Unknown
+        );
+        let v6 = HashSet::from([(10, SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), 53))]);
+        assert_eq!(
+            direction(Proto::Udp, None, 10, local, peer, &tcp, &v6),
             Dir::In
         );
         assert_eq!(
+            direction(Proto::Udp, None, 10, local, sa(50000), &tcp, &v6),
+            Dir::Unknown
+        );
+        assert_eq!(
             direction(
-                Proto::Tcp,
-                Some(TcpState::Established),
-                12,
-                50001,
-                sa(443),
-                &listen
+                Proto::Udp,
+                None,
+                10,
+                local,
+                unspecified_remote(local.ip()),
+                &tcp,
+                &v6
             ),
-            Dir::Out
+            Dir::Unknown
         );
-        assert_eq!(
-            direction(Proto::Udp, None, 1, 53, unspecified(), &listen),
-            Dir::Listen
-        );
-        assert_eq!(
-            direction(Proto::Udp, None, 1, 53, sa(53), &listen),
-            Dir::Out
-        );
+    }
+
+    #[test]
+    fn process_buffers_decode_within_reported_bounds() {
+        assert_eq!(buf_to_string(b"name\0junk", 9), "name");
+        assert_eq!(buf_to_string(b"longname", 4), "long");
+        assert_eq!(buf_to_string(b"full", 99), "full");
+        assert_eq!(buf_to_string(b"name", -1), "");
+        assert_eq!(buf_to_string(b"name", 0), "");
+        assert_eq!(buf_to_string(b"", 1), "");
+        assert_eq!(buf_to_string(&[b'a', 0xc3], 2), "a\u{fffd}");
     }
 }

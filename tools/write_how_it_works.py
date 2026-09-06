@@ -381,7 +381,7 @@ def story():
                 [
                     cell("2. snapshot.rs"),
                     cell("netstat2 + libc"),
-                    cell("Turn those FDs into Endpoint structs: pid, proto, addrs, process name, path, In/Out/Listen."),
+                    cell("Turn those FDs into Endpoint structs: pid, proto, addrs, process name, path, In/Out/Listen/Unknown."),
                 ],
                 [
                     cell("3. diff.rs"),
@@ -416,11 +416,11 @@ def story():
                 ],
                 [
                     cell("snapshot.rs"),
-                    cell("get_sockets_info(IPv4|IPv6, TCP|UDP). Map netstat2 TCP states onto our enum. proc_name / proc_pidpath per PID (cached per tick). Direction: LISTEN → Listen, SYN_SENT → Out, else In if that PID also listens on the local port. is_offbox: not unspecified, not loopback (v4-mapped loopback counts as local)."),
+                    cell("get_sockets_info(IPv4|IPv6, TCP|UDP). Map netstat2 TCP states onto our enum. proc_name / proc_pidpath per PID (cached per tick). TCP direction: LISTEN → Listen, SYN_SENT → Out, else In if that PID also listens on the local port. UDP is Unknown because peers are unavailable. is_offbox: not unspecified, not loopback (v4-mapped loopback counts as local)."),
                 ],
                 [
                     cell("diff.rs"),
-                    cell("Identity key = (pid, proto, ip version, local, remote). Missing key → NewIn or NewOut. Same key, different TCP state → Changed. Missing from next snapshot → Deleted linger=2, then drop. Returning after delete is New, not Changed."),
+                    cell("Identity key = (pid, proto, ip version, local, remote). New key → NewIn or NewOut; Unknown has no direction flash. Same key, different TCP state → Changed. Missing from next snapshot → Deleted linger=2, then 1, then drop. Returning after delete is New, not Changed."),
                 ],
                 [
                     cell("app.rs"),

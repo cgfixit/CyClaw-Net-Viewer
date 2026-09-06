@@ -413,7 +413,7 @@ def story():
                 [cell("Process"), cell("Short name from proc_name. “?” if the PID could not be named.")],
                 [cell("PID"), cell("Owning process id. 0 means the kernel did not attach a PID.")],
                 [cell("Proto"), cell("TCP4, TCP6, UDP4, or UDP6.")],
-                [cell("Dir"), cell("Listen, In (accepted on a local listener), or Out (including SYN_SENT).")],
+                [cell("Dir"), cell("TCP: Listen, In (local listener heuristic), or Out (including SYN_SENT). UDP: Unknown because peers are unavailable.")],
                 [cell("Local"), cell("Local address and port. Unspecified shows as *:port.")],
                 [cell("Remote"), cell("Peer address and port. Off-box remotes are the telemetry-kill signal.")],
                 [cell("State"), cell("TCP FSM name (ESTABLISHED, LISTEN, TIME_WAIT, …). Empty for UDP.")],
@@ -646,7 +646,7 @@ def story():
             [
                 [cell("Limit", True), cell("Detail", True)],
                 [cell("SIP / TCC"), cell("Protected processes often omit FDs without root. The app still runs unprivileged.")],
-                [cell("UDP remotes"), cell("The socket enumerator does not expose connected UDP peers. Those rows look like *:0 / Listen.")],
+                [cell("UDP remotes"), cell("The socket enumerator does not expose connected UDP peers. Those rows show *:0 / Unknown; local bindings do not establish packet direction.")],
                 [cell("No byte counters"), cell("Darwin socket_info does not give cheap cumulative bytes without packet tap.")],
                 [cell("First tick"), cell("Walking every PID can take a beat; then it settles at the chosen rate.")],
                 [cell("Unsigned app"), cell("Ad-hoc codesign only. Notarization is out of scope.")],
