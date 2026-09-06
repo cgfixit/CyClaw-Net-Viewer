@@ -511,7 +511,11 @@ mod tests {
                 10,
                 Proto::Tcp,
                 v6,
-                [(10, Proto::Tcp, v4), (10, Proto::Tcp, other_v4), (10, Proto::Tcp, v6)]
+                [
+                    (10, Proto::Tcp, v4),
+                    (10, Proto::Tcp, other_v4),
+                    (10, Proto::Tcp, v6)
+                ]
             ),
             None
         );
@@ -520,7 +524,11 @@ mod tests {
                 10,
                 Proto::Tcp,
                 v6,
-                [(10, Proto::Tcp, v4), (10, Proto::Tcp, v4), (10, Proto::Tcp, v6)]
+                [
+                    (10, Proto::Tcp, v4),
+                    (10, Proto::Tcp, v4),
+                    (10, Proto::Tcp, v6)
+                ]
             ),
             Some(Ipv4Addr::new(1, 2, 3, 4))
         );
