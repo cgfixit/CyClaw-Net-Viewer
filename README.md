@@ -26,7 +26,7 @@ that file.
 
 - Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6.
 - Refreshes on a timer (default 1s). New outgoing rows are green. New incoming or listen rows are blue. State changes are yellow. Closed rows linger red on the first two refreshes where they are absent, then disappear on the third. Off-box remotes stay orange while they exist.
-- When **Resolve names** is on, resolves names in the background. Cells prefer `hostname (IPv4):port` when PTR and A records exist. IPv6 sockets stay in the table.
+- Address cells prefer `hostname (IPv4):port` when **Resolve names** is on and a name plus IPv4 exist, then a unique same-process IPv4 twin (same proto and remote port) or IPv4-mapped address, then `[IPv6]:port`. Dual-stack peers stay two rows; v6-only remotes and ambiguous multi-peer twins stay IPv6. Name resolution is off by default.
 - Builds a double-click `.app` and a Tcpvcon-style CLI in the same binary.
 
 UDP direction is **Unknown**: the socket library exposes local bindings but

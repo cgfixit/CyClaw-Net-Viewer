@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use crate::dns::{lookup_ip, Resolved};
-use crate::snapshot::{csv_escape, fmt_addr, snapshot, Endpoint, TcpState};
+use crate::snapshot::{csv_escape, fmt_addr, snapshot, twin_ipv4, Endpoint, TcpState};
 
 pub struct CliArgs {
     pub all: bool,
@@ -100,21 +100,34 @@ fn print_rows(
         println!("Process,PID,Proto,Dir,Local,Remote,State,Path");
     }
     for e in eps {
-        print_row(e, csv, &mut name);
+        print_row(e, eps, csv, &mut name);
     }
 }
 
-fn print_row(e: &Endpoint, csv: bool, name: &mut dyn FnMut(IpAddr) -> Option<Resolved>) {
-    let mut fmt = |addr: std::net::SocketAddr| {
+fn print_row(
+    e: &Endpoint,
+    current: &[Endpoint],
+    csv: bool,
+    name: &mut dyn FnMut(IpAddr) -> Option<Resolved>,
+) {
+    let twin = twin_ipv4(
+        e.key.pid,
+        e.key.proto,
+        e.key.remote,
+        current
+            .iter()
+            .map(|row| (row.key.pid, row.key.proto, row.key.remote)),
+    );
+    let mut fmt = |addr: std::net::SocketAddr, extra_ipv4: Option<std::net::Ipv4Addr>| {
         let r = name(addr.ip());
         fmt_addr(
             addr,
             r.as_ref().map(|x| x.host.as_str()),
-            r.as_ref().and_then(|x| x.ipv4),
+            r.as_ref().and_then(|x| x.ipv4).or(extra_ipv4),
         )
     };
-    let local = fmt(e.key.local);
-    let remote = fmt(e.key.remote);
+    let local = fmt(e.key.local, None);
+    let remote = fmt(e.key.remote, twin);
     if csv {
         println!(
             "{},{},{},{},{},{},{},{}",
