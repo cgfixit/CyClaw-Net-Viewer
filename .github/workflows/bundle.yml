@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
+  pull_request:
 
 permissions:
   contents: read
@@ -19,18 +20,37 @@ env:
 jobs:
   app:
     runs-on: macos-14
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.85.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@3230091d7ef9483f601620abacc570c22cf44d22 # 1.85.0
+        with:
+          toolchain: 1.85.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: make-app
         run: ./scripts/make-app.sh
       - name: check binary
         run: |
           test -x dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
-          lipo -info dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
-      - uses: actions/upload-artifact@v4
+          lipo dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard -verify_arch arm64 x86_64
+          codesign --verify --deep --strict dist/CyClaw-Net-Viewer.app
+          dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard --cli -n -a > /dev/null
+      - name: Archive with macOS permissions and metadata
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/CyClaw-Net-Viewer.app dist/CyClaw-Net-Viewer.zip
+          cd dist
+          shasum -a 256 CyClaw-Net-Viewer.zip > CyClaw-Net-Viewer.zip.sha256
+          mkdir verify
+          ditto -x -k CyClaw-Net-Viewer.zip verify
+          test -x verify/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
+          codesign --verify --deep --strict verify/CyClaw-Net-Viewer.app
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: CyClaw-Net-Viewer.app
-          path: dist/CyClaw-Net-Viewer.app
+          name: CyClaw-Net-Viewer-${{ github.sha }}
+          path: |
+            dist/CyClaw-Net-Viewer.zip
+            dist/CyClaw-Net-Viewer.zip.sha256
           if-no-files-found: error
+          retention-days: 14

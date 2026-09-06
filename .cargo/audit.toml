@@ -1,0 +1,10 @@
+# cargo-audit 0.22.2 reads this from the project `.cargo/` directory.
+# Do not copy the cargo-audit example's deny = ["unmaintained"]: paste and
+# ttf-parser are Darwin-reachable and must remain warnings, not failures.
+
+[advisories]
+# Linux/BSD AccessKit (accesskit_unix -> zbus_xml 4.0.0 -> quick-xml 0.30.0).
+# Absent from aarch64-apple-darwin / x86_64-apple-darwin trees (DoS only).
+# Drop these ignores when zbus_xml 4.x is gone from the lockfile without
+# changing Darwin AccessKit or rustc 1.85.0.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]

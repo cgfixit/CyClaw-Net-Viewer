@@ -1,0 +1,6 @@
+# Shared project defaults. Personal model and authentication stay in user config.
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false

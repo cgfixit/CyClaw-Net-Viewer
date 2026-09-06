@@ -1,13 +1,53 @@
-/target
+# Build and packaging output
+/target/
+/dist/*
+!/dist/README.md
+*.dSYM/
+*.profraw
+*.profdata
+
+# OS and editor state
 .DS_Store
+._*
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Credentials and private local configuration
 .env
 .env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+
+# Optional documentation tooling
 venv/
 .venv/
 __pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Captures, local exports, and scratch work
 *.csv
-netboard-*.csv
-cyclaw-net-viewer-*.csv
-dist/NetBoard.app
-dist/NetBoard.dmg
+*.pcap
+*.pcapng
+*.log
+/work/
+/tmp/
 /CyClaw-Net-Viewer-How-It-Works.pdf
+
+# Personal Codex state; shared config and guidance remain tracked
+.codex/auth.json
+.codex/history.jsonl
+.codex/sessions/
+.codex/archived_sessions/
+.codex/log/
+.codex/tmp/
+.codex/*.sqlite*
+.codex/*.db*
+.codex/config.local.toml

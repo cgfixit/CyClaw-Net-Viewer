@@ -638,7 +638,7 @@ impl NetBoardApp {
                 crate::csv_escape(&r.endpoint.path)
             ));
         }
-        match std::fs::write(&name, buf) {
+        match crate::export::save_new(std::path::Path::new(&name), &buf) {
             Ok(()) => self.last_save = Some(format!("saved {name}")),
             Err(e) => self.last_save = Some(format!("save failed: {e}")),
         }
