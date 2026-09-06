@@ -7,9 +7,8 @@
 
 Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
 
-Crate and binary name: `netboard`. Window and bundle name: **CyClaw-Net-Viewer**. Repo: [cgfixit/Mac-NetViewer-EZview](https://github.com/cgfixit/Mac-NetViewer-EZview).
-
 App Screenshot:
+
 <img src="https://raw.githubusercontent.com/cgfixit/Mac-NetViewer-EZview/refs/heads/master/IMG_4212.jpeg">
 
 ## What it does
