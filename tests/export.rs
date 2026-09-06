@@ -2,8 +2,11 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static EXPORT_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use netboard::{csv_escape, export::save_new};
 
@@ -12,7 +15,9 @@ struct ExportDir(PathBuf);
 impl ExportDir {
     fn new() -> Self {
         let pid = std::process::id();
-        for seq in 0..u32::MAX {
+        // pid+nanos can collide when cargo runs these tests in one process.
+        let mut seq = EXPORT_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        loop {
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
@@ -21,11 +26,12 @@ impl ExportDir {
                 std::env::temp_dir().join(format!("netboard-integration-{pid}-{nonce}-{seq}"));
             match fs::create_dir(&path) {
                 Ok(()) => return Self(path),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    seq = seq.wrapping_add(1);
+                }
                 Err(error) => panic!("create export dir: {error}"),
             }
         }
-        panic!("could not create a unique export dir");
     }
 }
 

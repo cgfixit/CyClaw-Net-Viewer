@@ -6,6 +6,7 @@ Homebrew `rust` is newer and is not the pin. Use rustup:
 
 ```
 export PATH="$HOME/.cargo/bin:$PATH"
+git clone https://github.com/cgfixit/CyClaw-Net-Viewer.git
 rustup toolchain install 1.85.0
 cd CyClaw-Net-Viewer
 rustc -V    # rustc 1.85.0

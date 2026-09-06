@@ -121,6 +121,9 @@ pub struct NetBoardApp {
 }
 
 impl NetBoardApp {
+    /// Numeric addresses until the user enables Resolve names.
+    const DEFAULT_RESOLVE_NAMES: bool = false;
+
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         let shared = Arc::new(Shared {
             rows: Mutex::new(Arc::new(Vec::new())),
@@ -139,7 +142,7 @@ impl NetBoardApp {
         Self {
             shared,
             resolver: Resolver::new(),
-            resolve_names: true,
+            resolve_names: Self::DEFAULT_RESOLVE_NAMES,
             filter: String::new(),
             sort: SortCol::Process,
             sort_asc: true,
@@ -243,12 +246,7 @@ impl eframe::App for NetBoardApp {
         let err = lock(&self.shared.err).clone();
         let paused = self.shared.paused.load(Ordering::Relaxed);
 
-        for r in rows.iter() {
-            if self.resolve_names {
-                self.resolver.request(r.endpoint.key.local.ip());
-                self.resolver.request(r.endpoint.key.remote.ip());
-            }
-        }
+        self.enqueue_name_lookups(&rows);
 
         let mut visible = self.visible(&rows);
         self.sort_rows(&mut visible);
@@ -323,6 +321,16 @@ impl eframe::App for NetBoardApp {
 }
 
 impl NetBoardApp {
+    fn enqueue_name_lookups(&self, rows: &[Row]) {
+        if !self.resolve_names {
+            return;
+        }
+        for r in rows {
+            self.resolver.request(r.endpoint.key.local.ip());
+            self.resolver.request(r.endpoint.key.remote.ip());
+        }
+    }
+
     fn hotkeys(&mut self, ctx: &egui::Context) {
         let mut pause = false;
         let mut refresh = false;
@@ -372,7 +380,7 @@ impl NetBoardApp {
                 }
                 let can_close = self.selected_established(visible).is_some();
                 ui.add_enabled_ui(can_close, |ui| {
-                    if ui.button("Close Connection…").clicked() {
+                    if ui.button("Terminate process…").clicked() {
                         self.ask_kill_selected();
                         ui.close_menu();
                     }
@@ -678,7 +686,7 @@ impl NetBoardApp {
                     ui.label("MIT. Not affiliated with Microsoft or Sysinternals.");
                     ui.label("Orange = TCP/UDP to an off-box remote (loopback/* stay uncolored). Event colors override: green new out, blue new in, yellow state change, red gone.");
                     ui.label("ICMP/ping is not a TCP/UDP socket and will not appear.");
-                    ui.label("Darwin cannot delete another process's TCB; Close Connection terminates the owning process after confirm.");
+                    ui.label("Darwin cannot delete another process's TCB; Terminate process sends SIGTERM to the owning process after confirm.");
                 });
         }
         if let Some((pid, name)) = self.pending_kill.clone() {
@@ -830,6 +838,52 @@ mod tests {
         app.filter.clear();
         app.show_udp = false;
         assert!(app.visible(&frame).is_empty());
+    }
+
+    #[test]
+    fn resolve_names_defaults_off_and_does_not_queue_lookups() {
+        use crate::{Dir, Endpoint, IpVer};
+        let endpoint = Endpoint {
+            key: EndpointKey {
+                pid: 1,
+                proto: Proto::Tcp,
+                ip_ver: IpVer::V4,
+                local: "127.0.0.1:50000".parse().unwrap(),
+                remote: "192.0.2.1:443".parse().unwrap(),
+            },
+            state: Some(TcpState::Established),
+            dir: Dir::Out,
+            process: "example".into(),
+            path: "/example".into(),
+        };
+        let rows = Arc::new(diff(&[], &[endpoint]));
+        let app = NetBoardApp {
+            shared: Arc::new(Shared {
+                rows: Mutex::new(Arc::clone(&rows)),
+                err: Mutex::new(None),
+                paused: AtomicBool::new(false),
+                interval_ms: AtomicU64::new(1000),
+                kick: AtomicBool::new(false),
+            }),
+            resolver: Resolver::new(),
+            resolve_names: NetBoardApp::DEFAULT_RESOLVE_NAMES,
+            filter: String::new(),
+            sort: SortCol::Process,
+            sort_asc: true,
+            selected: None,
+            show_udp: true,
+            show_listen: true,
+            color_offbox: true,
+            offbox_only: false,
+            show_about: false,
+            pending_kill: None,
+            last_save: None,
+            interval_choice: 1000,
+            filter_focused: false,
+        };
+        app.enqueue_name_lookups(&rows);
+        assert!(!app.resolver.contains("127.0.0.1".parse().unwrap()));
+        assert!(!app.resolver.contains("192.0.2.1".parse().unwrap()));
     }
 
     #[test]

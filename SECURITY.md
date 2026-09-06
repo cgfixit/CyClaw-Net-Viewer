@@ -15,14 +15,15 @@ check run requiring write access.
 - Run as a normal user. SIP/TCC and OS permissions can hide processes; do
   not disable them to fill the table. Elevated execution increases the
   consequences of process termination and file exports.
-- Close Connection sends SIGTERM to the whole owning process after
+- Terminate process sends SIGTERM to the whole owning process after
   confirmation. Zero, launchd, self, and out-of-range PIDs are refused.
   PID reuse between snapshot and confirmation remains a limitation; a PID
   is not a durable process identity. Avoid terminating stale selections.
-- DNS resolution is on by default and can send PTR/A queries through the
-  system resolver. Numeric CLI mode avoids lookups; disabling GUI name
-  resolution stops new requests, but queued requests may complete. Cached
-  names are untrusted labels, not verified peer identities.
+- GUI name resolution is off by default. Enabling it can send PTR/A
+  queries through the system resolver. Numeric CLI mode (`-n`) avoids
+  lookups; disabling GUI name resolution stops new requests, but queued
+  requests may complete. Cached names are untrusted labels, not verified
+  peer identities.
 - GUI CSV exports are created exclusively with mode 0600, without following
   existing symlinks. Existing files are never overwritten. A failed write
   may leave a partial private file and is reported as a save failure.
