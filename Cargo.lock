@@ -1942,7 +1942,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "netboard"
+name = "cyclaw-net-viewer"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",

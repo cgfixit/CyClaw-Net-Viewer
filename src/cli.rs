@@ -155,8 +155,8 @@ fn print_help() {
     eprintln!(
         "CyClaw-Net-Viewer — Darwin TCP/UDP endpoint viewer\n\
          \n\
-         GUI:  netboard\n\
-         CLI:  netboard --cli [-a] [-c] [-n] [process|pid]\n\
+         GUI:  cyclaw-net-viewer\n\
+         CLI:  cyclaw-net-viewer --cli [-a] [-c] [-n] [process|pid]\n\
          \n\
            -a    all endpoints (default: ESTABLISHED TCP)\n\
            -c    CSV\n\
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn defaults_keep_established_only_with_name_resolution() {
-        let parsed = parse(&args(&["netboard", "--cli"])).unwrap();
+        let parsed = parse(&args(&["cyclaw-net-viewer", "--cli"])).unwrap();
         assert!(!parsed.all);
         assert!(!parsed.csv);
         assert!(!parsed.numeric);
@@ -184,7 +184,15 @@ mod tests {
     #[test]
     fn flags_can_surround_a_single_process_or_pid_filter() {
         for filter in ["Example Process", "12345"] {
-            let parsed = parse(&args(&["netboard", "--cli", "-n", filter, "-c", "-a"])).unwrap();
+            let parsed = parse(&args(&[
+                "cyclaw-net-viewer",
+                "--cli",
+                "-n",
+                filter,
+                "-c",
+                "-a",
+            ]))
+            .unwrap();
             assert!(parsed.all && parsed.csv && parsed.numeric);
             assert_eq!(parsed.filter.as_deref(), Some(filter));
         }
@@ -193,9 +201,9 @@ mod tests {
     #[test]
     fn unknown_flags_and_multiple_filters_are_rejected() {
         for values in [
-            vec!["netboard", "--cli", "--bogus"],
-            vec!["netboard", "--cli", "-can"],
-            vec!["netboard", "--cli", "first", "second"],
+            vec!["cyclaw-net-viewer", "--cli", "--bogus"],
+            vec!["cyclaw-net-viewer", "--cli", "-can"],
+            vec!["cyclaw-net-viewer", "--cli", "first", "second"],
         ] {
             assert!(parse(&args(&values)).is_err());
         }

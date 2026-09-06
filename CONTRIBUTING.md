@@ -6,7 +6,7 @@ Use macOS 12+ with Xcode Command Line Tools (`xcode-select --install`) and
 rustup. Clone the repository and run:
 
 ```sh
-cd Mac-NetViewer-EZview
+cd cyclaw-net-viewer
 rustup toolchain install 1.85.0 --component rustfmt --component clippy
 ./scripts/check.sh
 cargo run --locked -- --cli -n -a
@@ -61,8 +61,8 @@ Dependabot updates action references, but not versions inside shell steps.
 ```sh
 ./scripts/make-app.sh
 codesign --verify --deep --strict dist/CyClaw-Net-Viewer.app
-lipo -info dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
-dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard --cli -n -a
+lipo -info dist/CyClaw-Net-Viewer.app/Contents/MacOS/cyclaw-net-viewer
+dist/CyClaw-Net-Viewer.app/Contents/MacOS/cyclaw-net-viewer --cli -n -a
 ./scripts/make-app.sh --dmg
 ```
 

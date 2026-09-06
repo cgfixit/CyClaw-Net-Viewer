@@ -318,7 +318,8 @@ def story():
         ),
         P("3.1 Compile a native binary", "H2c"),
         P(
-            "rustc 1.85.0 builds crate netboard into an executable named netboard. "
+            "rustc 1.85.0 builds package cyclaw-net-viewer (library crate netboard) "
+            "into an executable named cyclaw-net-viewer. "
             "scripts/make-app.sh sets MACOSX_DEPLOYMENT_TARGET=12.0 so the Mach-O’s "
             "minos is 12.0 (Monterey). It builds aarch64-apple-darwin and, when the SDK "
             "allows, x86_64-apple-darwin, then lipo -create so one file is Intel and Apple Silicon.",
@@ -342,7 +343,7 @@ def story():
             "CyClaw-Net-Viewer.app/<br/>"
             "&nbsp;&nbsp;Contents/<br/>"
             "&nbsp;&nbsp;&nbsp;&nbsp;Info.plist&nbsp;&nbsp;&nbsp;# name, bundle id local.cyclaw.netviewer, min OS 12.0<br/>"
-            "&nbsp;&nbsp;&nbsp;&nbsp;MacOS/netboard&nbsp;&nbsp;# the lipo’d executable",
+            "&nbsp;&nbsp;&nbsp;&nbsp;MacOS/cyclaw-net-viewer&nbsp;&nbsp;# the lipo’d executable",
             "CodeBlock",
         ),
         P(
@@ -354,7 +355,7 @@ def story():
             "Body",
         ),
         P(
-            "Double-click = launchd/Finder exec of Contents/MacOS/netboard. No Python, "
+            "Double-click = launchd/Finder exec of Contents/MacOS/cyclaw-net-viewer. No Python, "
             "no Node, no JVM.",
             "Body",
         ),

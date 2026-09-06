@@ -1,10 +1,10 @@
 use std::process::{Command, Output};
 
 fn run(args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_netboard"))
+    Command::new(env!("CARGO_BIN_EXE_cyclaw_net_viewer"))
         .args(args)
         .output()
-        .expect("run netboard CLI")
+        .expect("run cyclaw-net-viewer CLI")
 }
 
 #[test]
@@ -13,7 +13,7 @@ fn help_exits_successfully_without_opening_gui() {
         let output = run(&args);
         assert!(output.status.success());
         let help = String::from_utf8(output.stderr).unwrap();
-        assert!(help.contains("netboard --cli [-a] [-c] [-n] [process|pid]"));
+        assert!(help.contains("cyclaw-net-viewer --cli [-a] [-c] [-n] [process|pid]"));
         assert!(output.stdout.is_empty());
     }
 }
