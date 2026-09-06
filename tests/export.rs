@@ -16,22 +16,22 @@ impl ExportDir {
     fn new() -> Self {
         let pid = std::process::id();
         // pid+nanos can collide when cargo runs these tests in one process.
-        let base_seq = EXPORT_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
-        for offset in 0..u32::MAX as u64 {
+        let mut seq = EXPORT_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+        loop {
             let nonce = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
                 .as_nanos();
-            let seq = base_seq + offset;
             let path =
                 std::env::temp_dir().join(format!("netboard-integration-{pid}-{nonce}-{seq}"));
             match fs::create_dir(&path) {
                 Ok(()) => return Self(path),
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    seq = seq.wrapping_add(1);
+                }
                 Err(error) => panic!("create export dir: {error}"),
             }
         }
-        panic!("could not create a unique export dir");
     }
 }
 
