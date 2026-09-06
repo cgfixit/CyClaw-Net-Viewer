@@ -588,7 +588,7 @@ impl NetBoardApp {
                 }
                 let local = self.fmt_ep(r.endpoint.key.local);
                 let remote = self.fmt_ep(r.endpoint.key.remote);
-                let blob = format!(
+                let mut blob = format!(
                     "{} {} {} {} {} {} {} {}",
                     r.endpoint.process,
                     r.endpoint.key.pid,
@@ -599,7 +599,8 @@ impl NetBoardApp {
                     r.endpoint.state_label(),
                     r.endpoint.path
                 );
-                blob.to_ascii_lowercase().contains(&f)
+                blob.make_ascii_lowercase();
+                blob.contains(&f)
             })
             .collect()
     }
@@ -775,8 +776,8 @@ mod tests {
             },
             state: None,
             dir: Dir::Unknown,
-            process: "example".into(),
-            path: String::new(),
+            process: "Example café".into(),
+            path: "/Applications/Example.app".into(),
         };
         let initial = Arc::new(diff(&[], &[endpoint(2), endpoint(1)]));
         let mut app = NetBoardApp {
@@ -812,6 +813,21 @@ mod tests {
         assert!(std::ptr::eq(app.selected_row(&visible).unwrap(), &frame[0]));
         *lock(&app.shared.rows) = Arc::new(Vec::new());
         assert_eq!(visible[1].endpoint.key.pid, 2); // Publication cannot change this frame.
+        for (query, count) in [
+            ("", 2),
+            ("EXAMPLE", 2),
+            ("2 UDP4", 1),
+            ("127.0.0.1:50000", 2),
+            ("50000 *:0", 2),
+            ("/APPLICATIONS/EXAMPLE.APP", 2),
+            ("CAFé", 2),
+            ("CAFÉ", 0), // Matching folds ASCII only, preserving non-ASCII text.
+            ("absent", 0),
+        ] {
+            app.filter = query.into();
+            assert_eq!(app.visible(&frame).len(), count, "filter: {query}");
+        }
+        app.filter.clear();
         app.show_udp = false;
         assert!(app.visible(&frame).is_empty());
     }
