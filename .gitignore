@@ -1,4 +1,13 @@
 /target
-/dist
+.DS_Store
+.env
+.env.*
+venv/
+.venv/
+__pycache__/
+*.csv
 netboard-*.csv
 cyclaw-net-viewer-*.csv
+dist/NetBoard.app
+dist/NetBoard.dmg
+/CyClaw-Net-Viewer-How-It-Works.pdf

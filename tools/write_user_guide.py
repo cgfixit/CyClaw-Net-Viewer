@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write CyClaw-Net-Viewer user guide PDF to the Desktop."""
+"""Write CyClaw-Net-Viewer user guide PDF into docs/."""
 
 from pathlib import Path
 
@@ -20,7 +20,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-OUT = Path("/Users/cg/Desktop/CyClaw-Net-Viewer-User-Guide.pdf")
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "docs" / "CyClaw-Net-Viewer-User-Guide.pdf"
 
 # App palette
 C_NEW_OUT = colors.HexColor("#C6EFCE")
@@ -363,7 +364,7 @@ def story():
         ),
         P(
             "export PATH=\"$HOME/.cargo/bin:$PATH\"<br/>"
-            "cd /Users/cg/netboard<br/>"
+            "cd Mac-NetViewer-EZview<br/>"
             "cargo run<br/>"
             "cargo run -- --cli -n -a<br/>"
             "./scripts/make-app.sh",
@@ -683,7 +684,7 @@ def story():
             "Inspiration: Sysinternals TCPView by Mark Russinovich. This tool is an independent "
             "macOS implementation under the MIT License and is not affiliated with Microsoft. "
             "Socket listing uses Darwin libproc (the same family of APIs as lsof). "
-            "Project path: <font face='Courier'>/Users/cg/netboard</font>.",
+            "Source lives in this repository. Crate name: <font face='Courier'>netboard</font>.",
             "Body",
         ),
     ]

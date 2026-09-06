@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write CyClaw-Net-Viewer how-it-works PDF to the Desktop."""
+"""Write CyClaw-Net-Viewer how-it-works PDF into docs/."""
 
 from pathlib import Path
 
@@ -19,7 +19,8 @@ from reportlab.platypus import (
     TableStyle,
 )
 
-OUT = Path("/Users/cg/Desktop/CyClaw-Net-Viewer-How-It-Works.pdf")
+ROOT = Path(__file__).resolve().parent.parent
+OUT = ROOT / "docs" / "CyClaw-Net-Viewer-How-It-Works.pdf"
 
 INK = colors.HexColor("#1A1A1A")
 MUTED = colors.HexColor("#4A4A4A")
@@ -223,7 +224,7 @@ def story():
         ),
         P(
             "Read this after the User Guide. That one is clicks and colors. "
-            "This one is for reviewing the source at /Users/cg/netboard with two altitudes: "
+            "This one is for reviewing the source in this repository with two altitudes: "
             "ELI5, then Tech 101 with real file and crate names.",
             "Body",
         ),
@@ -362,7 +363,7 @@ def story():
     out += [
         P("4. Tech 101 — what the code is doing", "H1c"),
         P(
-            "All of this lives under /Users/cg/netboard/src/. Binary entry is main.rs. "
+            "All of this lives under src/. Binary entry is main.rs. "
             "Library modules are re-exported from lib.rs.",
             "Body",
         ),
@@ -577,8 +578,8 @@ def story():
             ]
         ),
         P(
-            "Project path: /Users/cg/netboard. User guide on the Desktop: "
-            "CyClaw-Net-Viewer-User-Guide.pdf. This document: CyClaw-Net-Viewer-How-It-Works.pdf.",
+            "User guide: docs/CyClaw-Net-Viewer-User-Guide.pdf. "
+            "This document: docs/CyClaw-Net-Viewer-How-It-Works.pdf.",
             "Body",
         ),
     ]
