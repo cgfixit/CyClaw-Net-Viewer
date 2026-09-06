@@ -2,8 +2,11 @@ use std::fs;
 use std::io::ErrorKind;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static EXPORT_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use netboard::{csv_escape, export::save_new};
 
@@ -15,8 +18,10 @@ impl ExportDir {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        // pid+nanos can collide when cargo runs these tests in one process.
+        let seq = EXPORT_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "netboard-integration-{}-{nonce}",
+            "netboard-integration-{}-{nonce}-{seq}",
             std::process::id()
         ));
         fs::create_dir(&path).unwrap();
