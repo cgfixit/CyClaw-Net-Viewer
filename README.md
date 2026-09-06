@@ -18,10 +18,6 @@ Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository 
 | curl | 2108 | TCP4 | Out | `127.0.0.1:54321` | `127.0.0.1:443` | ESTABLISHED | /usr/bin/curl |
 | mDNSResponder | 301 | UDP4 | Unknown | `*:5353` | `*:0` |  | /usr/sbin/mDNSResponder |
 
-Needed from a Mac: a Cmd-Shift-4 PNG of the running window. Numeric
-addresses are fine. Drop it in `docs/assets/` and point this section at
-that file.
-
 ## What it does
 
 - Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6.
