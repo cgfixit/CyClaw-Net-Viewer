@@ -10,4 +10,5 @@
 - Confirm no private endpoint data, keys, generated bundles, or agent state
   are staged. Keep Cargo.lock changes intentional.
 - Fill out the PR template, including exact validation and unresolved risks.
-- Push the feature branch, open a draft against `master`, and inspect CI.
+- Push the feature branch, open a draft against the default branch
+  (`master` today, `main` after the Settings rename), and inspect CI.

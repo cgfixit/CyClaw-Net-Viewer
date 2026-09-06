@@ -9,10 +9,11 @@ the CyClaw AI repository and does not import that project's runtime or
 policies.
 
 Read `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and the relevant source
-before editing. The default branch is `master`. Work on a `codex/<topic>`
-branch and open draft PRs against `master`; do not merge or push directly
-to the default branch unless the user explicitly requests it. Check open
-PRs for overlapping work first and use `.github/PULL_REQUEST_TEMPLATE.md`.
+before editing. The default branch is currently `master`; a rename to `main`
+is deferred. Work on a `codex/<topic>` branch and open draft PRs against the
+repository default; do not merge or push directly to the default branch
+unless the user explicitly requests it. Check open PRs for overlapping work
+first and use `.github/PULL_REQUEST_TEMPLATE.md`.
 
 ## Source map
 
