@@ -13,4 +13,4 @@
 | Click row | select |
 | Right-click row | copy line, copy remote, terminate, reveal in Finder |
 | File → Save CSV | write `cyclaw-net-viewer-YYYYMMDD-HHMMSS.csv` in the current directory |
-| File → Close Connection | same as terminate; enabled only for ESTABLISHED TCP |
+| File → Terminate process | same as terminate; enabled only for ESTABLISHED TCP |
