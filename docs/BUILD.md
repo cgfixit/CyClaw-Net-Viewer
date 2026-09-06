@@ -29,5 +29,7 @@ Hardened Runtime and notarization are separate release-engineering work and
 have not been validated for this app.
 
 Generated bundles stay out of Git. CI verifies both architectures, signature,
-CLI execution, and ZIP extraction. See [CONTRIBUTING.md](../CONTRIBUTING.md)
-for validation commands and [dist/README.md](../dist/README.md) for artifacts.
+CLI execution, and ZIP extraction. Public downloads use a
+[GitHub Release](https://github.com/cgfixit/Mac-NetViewer-EZview/releases/latest).
+See [CONTRIBUTING.md](../CONTRIBUTING.md) for validation commands and
+[dist/README.md](../dist/README.md) for artifact layout.
