@@ -1,4 +1,4 @@
-# CyClaw-Net-Viewer
+# MacOS / CyClaw-Net-Viewer
 
 [![CI](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/ci.yml/badge.svg)](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/github/license/cgfixit/Mac-NetViewer-EZview)](LICENSE)
