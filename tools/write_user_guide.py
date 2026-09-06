@@ -364,7 +364,7 @@ def story():
         ),
         P(
             "export PATH=\"$HOME/.cargo/bin:$PATH\"<br/>"
-            "cd Mac-NetViewer-EZview<br/>"
+            "cd CyClaw-Net-Viewer<br/>"
             "cargo run<br/>"
             "cargo run -- --cli -n -a<br/>"
             "./scripts/make-app.sh",

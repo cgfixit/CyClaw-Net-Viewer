@@ -11,16 +11,21 @@ struct ExportDir(PathBuf);
 
 impl ExportDir {
     fn new() -> Self {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "netboard-integration-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&path).unwrap();
-        Self(path)
+        let pid = std::process::id();
+        for seq in 0..u32::MAX {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                std::env::temp_dir().join(format!("netboard-integration-{pid}-{nonce}-{seq}"));
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!("create export dir: {error}"),
+            }
+        }
+        panic!("could not create a unique export dir");
     }
 }
 

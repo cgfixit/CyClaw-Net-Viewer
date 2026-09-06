@@ -6,7 +6,7 @@ Use macOS 12+ with Xcode Command Line Tools (`xcode-select --install`) and
 rustup. Clone the repository and run:
 
 ```sh
-cd Mac-NetViewer-EZview
+cd CyClaw-Net-Viewer
 rustup toolchain install 1.85.0 --component rustfmt --component clippy
 ./scripts/check.sh
 cargo run --locked -- --cli -n -a
@@ -72,9 +72,12 @@ CI requires both architectures, checks the signature, and archives the app
 with `ditto` to preserve executable permissions and bundle metadata. Bundles
 are ad-hoc signed, not Developer ID signed or notarized.
 
-Do not commit `target/` or generated `dist/` artifacts. The Bundle workflow
-provides a ZIP and SHA-256 checksum tied to the workflow's source revision.
-Checksums detect corruption; they do not establish a trusted publisher.
+Do not commit `target/` or generated `dist/` artifacts. Public downloads
+use a GitHub Release. The Bundle workflow still uploads a ZIP and
+SHA-256 checksum tied to the workflow's source revision for CI and
+maintainer use; those Actions artifacts expire and are not the user
+distribution channel. Checksums detect corruption; they do not
+establish a trusted publisher.
 
 ## Changes and review
 
