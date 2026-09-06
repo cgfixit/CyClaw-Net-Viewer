@@ -51,7 +51,9 @@ remaining limitations of the repository review.
 
 The full lockfile audit reports `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195`
 against `quick-xml 0.30.0`, pulled through the Linux/BSD accessibility stack.
-It is absent from both supported macOS target dependency trees. No advisory
-ignore has been added: the full lockfile Audit check remains failing until
-the upstream chain can be updated. See the review for evidence and follow-up.
-The audit also reports unmaintained `paste` and `ttf-parser` packages.
+It is absent from both supported macOS target dependency trees. Those two
+IDs are ignored in `.cargo/audit.toml` as Darwin-unreachable DoS findings
+so the Audit job can pass without changing the macOS binary, AccessKit, or
+the rustc 1.85.0 pin. Drop the ignores when `zbus_xml` 4.x leaves the
+lockfile. See the review for evidence and follow-up. The audit also reports
+unmaintained `paste` and `ttf-parser` packages; those are not ignored.

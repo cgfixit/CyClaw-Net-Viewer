@@ -49,11 +49,14 @@ cargo tree --locked --target x86_64-apple-darwin -i quick-xml@0.30.0
 This is evidence of no build dependency path for the vulnerable version in
 the supported macOS targets, not a fix to the full lockfile. The old
 `zbus_xml` major cannot accept quick-xml 0.41 as a lockfile-only update.
-Retain the audit failure without ignores; follow up with an upstream
-accessibility dependency migration that preserves macOS accessibility and
-validates the compiler requirement. Do not disable accessibility just to
-remove an advisory. Unmaintained `paste` and `ttf-parser` also need upstream
-tracking. The yanked URL warning is addressed by the patch update above.
+`zbus_xml` 5.2.x dropped quick-xml but declares MSRV 1.87, above this
+app's rustc 1.85.0 pin. Bumping `eframe` / AccessKit would change Darwin
+accessibility, so those advisories are ignored in `.cargo/audit.toml`
+as Darwin-unreachable DoS findings. Drop the ignores when `zbus_xml` 4.x
+leaves the lockfile without changing Darwin AccessKit or rustc 1.85.0.
+Do not disable accessibility just to remove an advisory. Unmaintained
+`paste` and `ttf-parser` also need upstream tracking and are not ignored.
+The yanked URL warning is addressed by the patch update above.
 
 ## Remaining limits
 
