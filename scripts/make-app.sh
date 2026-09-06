@@ -28,18 +28,17 @@ esac
 
 cargo build --locked --release --target "$HOST"
 
-BIN_NAME=cyclaw-net-viewer
 ARM_BIN=""
 INTEL_BIN=""
 case "$HOST" in
-  aarch64-apple-darwin) ARM_BIN="$ROOT/target/$ARM/release/$BIN_NAME" ;;
-  x86_64-apple-darwin) INTEL_BIN="$ROOT/target/$INTEL/release/$BIN_NAME" ;;
+  aarch64-apple-darwin) ARM_BIN="$ROOT/target/$ARM/release/netboard" ;;
+  x86_64-apple-darwin) INTEL_BIN="$ROOT/target/$INTEL/release/netboard" ;;
 esac
 
 if [ "$HOST" != "$INTEL" ]; then
   if rustup target add "$INTEL" >/dev/null 2>&1 \
     && cargo build --locked --release --target "$INTEL"; then
-    INTEL_BIN="$ROOT/target/$INTEL/release/$BIN_NAME"
+    INTEL_BIN="$ROOT/target/$INTEL/release/netboard"
   else
     echo "x86_64 build skipped (no target/SDK); shipping host arch only" >&2
   fi
@@ -47,7 +46,7 @@ fi
 if [ "$HOST" != "$ARM" ]; then
   if rustup target add "$ARM" >/dev/null 2>&1 \
     && cargo build --locked --release --target "$ARM"; then
-    ARM_BIN="$ROOT/target/$ARM/release/$BIN_NAME"
+    ARM_BIN="$ROOT/target/$ARM/release/netboard"
   else
     echo "arm64 build skipped (no target/SDK); shipping host arch only" >&2
   fi
@@ -57,7 +56,7 @@ DIST="$ROOT/dist"
 APP="$DIST/CyClaw-Net-Viewer.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-OUT="$APP/Contents/MacOS/$BIN_NAME"
+OUT="$APP/Contents/MacOS/netboard"
 
 if [ -n "$ARM_BIN" ] && [ -n "$INTEL_BIN" ] && [ -x "$ARM_BIN" ] && [ -x "$INTEL_BIN" ]; then
   lipo -create -output "$OUT" "$ARM_BIN" "$INTEL_BIN"

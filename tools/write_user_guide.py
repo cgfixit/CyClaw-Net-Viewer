@@ -307,10 +307,8 @@ def story():
         P(
             "Think of it as a more readable, live subset of what <font face='Courier'>netstat</font> "
             "and <font face='Courier'>lsof -i</font> already know, with Sysinternals-style "
-            "highlighting. The Cargo package and CLI are named "
-            "<font face='Courier'>cyclaw-net-viewer</font>; the Rust library crate remains "
-            "<font face='Courier'>netboard</font>. The window, bundle, and this guide use "
-            "<b>CyClaw-Net-Viewer</b>.",
+            "highlighting. The crate and binary are still named <font face='Courier'>netboard</font>; "
+            "the window, bundle, and this guide use <b>CyClaw-Net-Viewer</b>.",
             "Body",
         ),
         P("It is for", "H2c"),
@@ -366,7 +364,7 @@ def story():
         ),
         P(
             "export PATH=\"$HOME/.cargo/bin:$PATH\"<br/>"
-            "cd cyclaw-net-viewer<br/>"
+            "cd CyClaw-Net-Viewer<br/>"
             "cargo run<br/>"
             "cargo run -- --cli -n -a<br/>"
             "./scripts/make-app.sh",
@@ -624,7 +622,7 @@ def story():
             "Body",
         ),
         P(
-            "cyclaw-net-viewer --cli [-a] [-c] [-n] [process|pid]<br/><br/>"
+            "netboard --cli [-a] [-c] [-n] [process|pid]<br/><br/>"
             "-a &nbsp;&nbsp; all TCP and UDP endpoints<br/>"
             "-c &nbsp;&nbsp; CSV (Process,PID,Proto,Dir,Local,Remote,State,Path)<br/>"
             "-n &nbsp;&nbsp; numeric addresses, no DNS<br/>"
@@ -632,8 +630,8 @@ def story():
             "CodeBlock",
         ),
         P(
-            "Examples: <font face='Courier'>cyclaw-net-viewer --cli -n -a</font> for a fast full dump; "
-            "<font face='Courier'>cyclaw-net-viewer --cli -c python</font> for CSV of processes whose "
+            "Examples: <font face='Courier'>netboard --cli -n -a</font> for a fast full dump; "
+            "<font face='Courier'>netboard --cli -c python</font> for CSV of processes whose "
             "name contains “python”. GUI is the default when <font face='Courier'>--cli</font> is omitted.",
             "Body",
         ),
@@ -686,9 +684,7 @@ def story():
             "Inspiration: Sysinternals TCPView by Mark Russinovich. This tool is an independent "
             "macOS implementation under the MIT License and is not affiliated with Microsoft. "
             "Socket listing uses Darwin libproc (the same family of APIs as lsof). "
-            "Source lives in this repository. Public package and CLI: "
-            "<font face='Courier'>cyclaw-net-viewer</font>. Library crate: "
-            "<font face='Courier'>netboard</font>.",
+            "Source lives in this repository. Crate name: <font face='Courier'>netboard</font>.",
             "Body",
         ),
     ]

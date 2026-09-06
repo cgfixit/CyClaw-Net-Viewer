@@ -7,7 +7,7 @@ Homebrew `rust` is newer and is not the pin. Use rustup:
 ```
 export PATH="$HOME/.cargo/bin:$PATH"
 rustup toolchain install 1.85.0
-cd cyclaw-net-viewer
+cd CyClaw-Net-Viewer
 rustc -V    # rustc 1.85.0
 cargo run --locked
 ./scripts/check.sh

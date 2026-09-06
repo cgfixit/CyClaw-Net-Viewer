@@ -2,11 +2,11 @@
 
 ## Project and scope
 
-CyClaw-Net-Viewer is a standalone macOS TCP/UDP endpoint viewer. The public
-Cargo package and executable are `cyclaw-net-viewer`; the Rust library crate
-remains `netboard`. The GitHub repository is still
-`cgfixit/Mac-NetViewer-EZview` until the owner renames it. It is not the
-CyClaw AI repository and does not import that project's runtime or policies.
+CyClaw-Net-Viewer is a standalone macOS TCP/UDP endpoint viewer. The Cargo
+crate and executable remain `netboard` internally. The GitHub repository is
+still `cgfixit/Mac-NetViewer-EZview` until the owner renames it. It is not
+the CyClaw AI repository and does not import that project's runtime or
+policies.
 
 Read `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and the relevant source
 before editing. The default branch is `master`. Work on a `codex/<topic>`

@@ -1,5 +1,5 @@
 [package]
-name = "cyclaw-net-viewer"
+name = "netboard"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85.0"
@@ -31,5 +31,5 @@ name = "netboard"
 path = "src/lib.rs"
 
 [[bin]]
-name = "cyclaw-net-viewer"
+name = "netboard"
 path = "src/main.rs"

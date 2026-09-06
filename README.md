@@ -7,7 +7,7 @@
 
 Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
 
-The public name is **CyClaw-Net-Viewer** (`cyclaw-net-viewer` for the Cargo package and CLI). The Rust library crate remains `netboard` as an internal alias. The GitHub repository is still `cgfixit/Mac-NetViewer-EZview` until the owner renames it.
+Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository is still `cgfixit/Mac-NetViewer-EZview` until the owner renames it.
 
 App Screenshot:
 
@@ -78,8 +78,8 @@ Rust **1.85.0** is pinned (`rust-toolchain.toml`). Homebrew rustc is newer and i
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-git clone https://github.com/cgfixit/Mac-NetViewer-EZview.git cyclaw-net-viewer
-cd cyclaw-net-viewer
+git clone https://github.com/cgfixit/Mac-NetViewer-EZview.git CyClaw-Net-Viewer
+cd CyClaw-Net-Viewer
 rustup toolchain install 1.85.0
 ./scripts/check.sh
 cargo run --locked
@@ -117,7 +117,7 @@ for agent guidance, and [.codex/README.md](.codex/README.md) for Codex setup.
 ## CLI
 
 ```text
-cyclaw-net-viewer --cli [-a] [-c] [-n] [process|pid]
+netboard --cli [-a] [-c] [-n] [process|pid]
 ```
 
 | Flag | Effect |

@@ -7,7 +7,7 @@
 	<key>CFBundleDisplayName</key>
 	<string>CyClaw-Net-Viewer</string>
 	<key>CFBundleExecutable</key>
-	<string>cyclaw-net-viewer</string>
+	<string>netboard</string>
 	<key>CFBundleIdentifier</key>
 	<string>local.cyclaw.netviewer</string>
 	<key>CFBundleInfoDictionaryVersion</key>
