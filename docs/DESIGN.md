@@ -4,7 +4,7 @@ TCPView-class viewer for Darwin (window title **CyClaw-Net-Viewer**). Official e
 
 **Off-box remotes** (any TCP/UDP peer that is not unspecified and not loopback) stay **orange** while they exist, so a telemetry-kill watch can see phone-home without waiting for a new/delete flash. Event colors still win. ICMP/ping is not in the socket table.
 
-Address cells: reverse DNS plus a forward A lookup so a v6 socket can still show `hostname (1.2.3.4):port`. IPv4-mapped IPv6 is printed as IPv4. Dual-stack remains two rows.
+Address cells prefer, in order: `hostname (IPv4):port` when Resolve names is on; a non-unspecified IPv4 (DNS A, IPv4-mapped unwrapping, or a current-row twin sharing pid/proto/remote port); otherwise `[v6]:port`. Dual-stack remains two rows. The twin is display-only and does not change `EndpointKey`.
 
 ## Snapshot
 
