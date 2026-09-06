@@ -340,8 +340,9 @@ pub fn fmt_addr(addr: SocketAddr, host: Option<&str>, ipv4: Option<Ipv4Addr>) ->
 }
 
 /// Display-only IPv4 for a native IPv6 remote when another current row shares
-/// `pid`, `proto`, and `remote.port()`. Does not invent an address for a
-/// v6-only peer and ignores IPv4-mapped remotes (those already unwrap).
+/// `pid`, `proto`, and `remote.port()` with exactly one distinct non-unspecified
+/// IPv4. Ambiguous multi-peer sets and v6-only peers stay IPv6. IPv4-mapped
+/// remotes are ignored (those already unwrap).
 pub(crate) fn twin_ipv4(
     pid: u32,
     proto: Proto,
@@ -355,15 +356,24 @@ pub(crate) fn twin_ipv4(
         return None;
     }
     let port = remote.port();
-    current.into_iter().find_map(|(row_pid, row_proto, addr)| {
+    let mut found = None;
+    for (row_pid, row_proto, addr) in current {
         if row_pid != pid || row_proto != proto || addr.port() != port {
-            return None;
+            continue;
         }
-        match addr.ip() {
-            IpAddr::V4(v4) if !v4.is_unspecified() => Some(v4),
-            _ => None,
+        let IpAddr::V4(v4) = addr.ip() else {
+            continue;
+        };
+        if v4.is_unspecified() {
+            continue;
         }
-    })
+        match found {
+            None => found = Some(v4),
+            Some(existing) if existing == v4 => {}
+            Some(_) => return None,
+        }
+    }
+    found
 }
 
 pub fn csv_escape(s: &str) -> String {
@@ -494,6 +504,25 @@ mod tests {
                 )]
             ),
             None
+        );
+        let other_v4 = SocketAddr::from((Ipv4Addr::new(5, 6, 7, 8), 443));
+        assert_eq!(
+            twin_ipv4(
+                10,
+                Proto::Tcp,
+                v6,
+                [(10, Proto::Tcp, v4), (10, Proto::Tcp, other_v4), (10, Proto::Tcp, v6)]
+            ),
+            None
+        );
+        assert_eq!(
+            twin_ipv4(
+                10,
+                Proto::Tcp,
+                v6,
+                [(10, Proto::Tcp, v4), (10, Proto::Tcp, v4), (10, Proto::Tcp, v6)]
+            ),
+            Some(Ipv4Addr::new(1, 2, 3, 4))
         );
     }
 
