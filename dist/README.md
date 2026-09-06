@@ -7,9 +7,8 @@ locally with `./scripts/make-app.sh` when you want a private copy.
 
 Maintainers may also download a 14-day
 [Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
-artifact for a specific commit. Prefer reviewed default-branch (`master` or
-`main`) builds;
-pull-request artifacts contain proposed changes. Actions zips expire
+artifact for a specific commit. Prefer the reviewed run for the exact commit
+you need. Pull-request artifacts contain proposed changes. Actions zips expire
 and require GitHub sign-in; they are not the public distribution
 channel.
 

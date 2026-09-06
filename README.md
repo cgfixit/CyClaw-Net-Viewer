@@ -87,10 +87,9 @@ source fixes.
 
 Maintainers who need a specific unreleased commit may download the
 14-day [Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
-artifact themselves (GitHub sign-in required). Prefer reviewed
-default-branch (`master` or `main`) builds. Those zips are not the public
-distribution channel. PR artifacts contain proposed changes and are for
-review only.
+artifact themselves (GitHub sign-in required). Prefer the reviewed run for
+the exact commit you need. Those zips are not the public distribution
+channel. PR artifacts contain proposed changes and are for review only.
 
 ## Build from source
 
