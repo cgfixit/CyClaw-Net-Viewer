@@ -3,9 +3,10 @@
 ## Project and scope
 
 CyClaw-Net-Viewer is a standalone macOS TCP/UDP endpoint viewer. The Cargo
-crate and executable are named `netboard`; the GitHub repository is
-`cgfixit/Mac-NetViewer-EZview`. It is not the CyClaw AI repository and does
-not import that project's runtime or policies.
+crate and executable remain `netboard` internally. The GitHub repository is
+still `cgfixit/Mac-NetViewer-EZview` until the owner renames it. It is not
+the CyClaw AI repository and does not import that project's runtime or
+policies.
 
 Read `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, and the relevant source
 before editing. The default branch is currently `master`; a rename to `main`

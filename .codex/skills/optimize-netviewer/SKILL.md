@@ -1,11 +1,12 @@
 ---
 name: optimize-netviewer
-description: Find and implement evidence-backed correctness, performance, safety, and maintainability improvements in cgfixit/Mac-NetViewer-EZview (netboard / CyClaw-Net-Viewer). Use for optimize-netviewer, NetViewer optimization, targeted bottleneck investigations, or a repository improvement pass. Respect audit-only scope, deduplicate current PRs, preserve macOS and Rust compatibility, and publish focused draft PRs when requested or already authorized. Do not apply to the CyClaw AI repository or unrelated network tools.
+description: Find and implement evidence-backed correctness, performance, safety, and maintainability improvements in CyClaw-Net-Viewer (GitHub: cgfixit/Mac-NetViewer-EZview; crate/binary netboard). Use for optimize-netviewer, NetViewer optimization, targeted bottleneck investigations, or a repository improvement pass. Respect audit-only scope, deduplicate current PRs, preserve macOS and Rust compatibility, and publish focused draft PRs when requested or already authorized. Do not apply to the CyClaw AI repository or unrelated network tools.
 ---
 
 # Optimize NetViewer
 
-Run one bounded improvement pass in `cgfixit/Mac-NetViewer-EZview`. Start with a
+Run one bounded improvement pass in CyClaw-Net-Viewer
+(`cgfixit/Mac-NetViewer-EZview`). Start with a
 reproducible defect, measured cost, or concrete validation gap. Implement the
 smallest useful change within the user's scope; do not invent a finding quota.
 For an audit-only request, return evidence and recommendations without edits.

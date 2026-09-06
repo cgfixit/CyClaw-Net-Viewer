@@ -1,9 +1,9 @@
-//! NetBoard: live TCP/UDP endpoints on Darwin, TCPView-class.
+//! `netboard` library for CyClaw-Net-Viewer: live TCP/UDP endpoints on Darwin.
 
 #![cfg_attr(not(target_os = "macos"), allow(unused))]
 
 #[cfg(not(target_os = "macos"))]
-compile_error!("NetBoard is macOS-only");
+compile_error!("netboard (CyClaw-Net-Viewer) is macOS-only");
 
 pub mod app;
 pub mod cli;

@@ -21,7 +21,7 @@ fn checked_target(pid: u32) -> Result<libc::pid_t, String> {
     }
     let me = std::process::id();
     if pid == me {
-        return Err("refusing to terminate NetBoard itself".into());
+        return Err("refusing to terminate CyClaw-Net-Viewer itself".into());
     }
     libc::pid_t::try_from(pid).map_err(|_| "PID is outside the valid process ID range".into())
 }
