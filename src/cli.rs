@@ -152,3 +152,49 @@ fn print_help() {
            -n    numeric addresses (no reverse DNS)\n"
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).into()).collect()
+    }
+
+    #[test]
+    fn defaults_keep_established_only_with_name_resolution() {
+        let parsed = parse(&args(&["netboard", "--cli"])).unwrap();
+        assert!(!parsed.all);
+        assert!(!parsed.csv);
+        assert!(!parsed.numeric);
+        assert_eq!(parsed.filter, None);
+    }
+
+    #[test]
+    fn flags_can_surround_a_single_process_or_pid_filter() {
+        for filter in ["Example Process", "12345"] {
+            let parsed = parse(&args(&["netboard", "--cli", "-n", filter, "-c", "-a"])).unwrap();
+            assert!(parsed.all && parsed.csv && parsed.numeric);
+            assert_eq!(parsed.filter.as_deref(), Some(filter));
+        }
+    }
+
+    #[test]
+    fn unknown_flags_and_multiple_filters_are_rejected() {
+        for values in [
+            vec!["netboard", "--cli", "--bogus"],
+            vec!["netboard", "--cli", "-anc"],
+            vec!["netboard", "--cli", "first", "second"],
+        ] {
+            assert!(parse(&args(&values)).is_err());
+        }
+    }
+
+    #[test]
+    fn text_truncation_counts_unicode_characters_without_splitting_utf8() {
+        assert_eq!(trunc("", 18), "");
+        assert_eq!(trunc("café", 4), "café");
+        assert_eq!(trunc("🦀网络工具", 4), "🦀网络…");
+        assert_eq!(trunc("ab", 1), "…");
+    }
+}

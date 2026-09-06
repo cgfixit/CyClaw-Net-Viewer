@@ -5,6 +5,7 @@
 *.dSYM/
 *.profraw
 *.profdata
+/lcov.info
 
 # OS and editor state
 .DS_Store

@@ -1,6 +1,49 @@
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 
 use netboard::{snapshot, Proto};
+
+#[test]
+fn connected_tcp_pair_has_both_established_endpoints_and_directions() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+    let server_addr = listener.local_addr().unwrap();
+    let client = TcpStream::connect_timeout(&server_addr, std::time::Duration::from_secs(5))
+        .expect("connect loopback");
+    let client_addr = client.local_addr().unwrap();
+    // A connected client is sufficient: the established server socket is in the
+    // accept queue. Accept nonblocking so a regression cannot hang the test.
+    listener.set_nonblocking(true).unwrap();
+    let (server, _) = listener
+        .accept()
+        .expect("accept queued loopback connection");
+    let pid = std::process::id();
+    for attempt in 0..20 {
+        let endpoints = snapshot().expect("snapshot");
+        let found = [
+            (client_addr, server_addr, netboard::Dir::Out),
+            (server_addr, client_addr, netboard::Dir::In),
+        ]
+        .iter()
+        .all(|(local, remote, direction)| {
+            endpoints.iter().any(|e| {
+                e.key.pid == pid
+                    && e.key.proto == Proto::Tcp
+                    && e.key.local == *local
+                    && e.key.remote == *remote
+                    && e.state == Some(netboard::TcpState::Established)
+                    && e.dir == *direction
+            })
+        });
+        if found {
+            drop((client, server, listener));
+            return;
+        }
+        assert!(
+            attempt < 19,
+            "loopback TCP pair missing or incorrectly classified"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
 
 #[test]
 fn bound_and_connected_udp_have_unknown_direction() {
