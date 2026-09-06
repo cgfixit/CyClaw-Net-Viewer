@@ -43,14 +43,12 @@ Turn on **Off-box only** when watching CyClaw telemetry-kill. Event colors still
 
 ## Get the app
 
-Download the artifact from a successful [Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
-run on `master` for the revision you want. GitHub sign-in is required for
-Actions downloads, which expire after 14 days; build from source if none
-is available. PR artifacts contain proposed changes and are for review.
-No Rust is required to run a downloaded app.
+Download `CyClaw-Net-Viewer.zip` and `CyClaw-Net-Viewer.zip.sha256` from the
+latest [GitHub Release](https://github.com/cgfixit/Mac-NetViewer-EZview/releases/latest).
+No Rust is required to run a downloaded app. Build from source (below) if
+you prefer not to use a prebuilt binary.
 
-Extract the Actions download first, then verify and unpack the inner ZIP
-on macOS:
+Verify and unpack on macOS:
 
 ```bash
 shasum -a 256 -c CyClaw-Net-Viewer.zip.sha256
@@ -65,10 +63,17 @@ version. Do not disable Gatekeeper system-wide. Ad-hoc signatures and
 checksums do not identify a trusted publisher. Do not App-Sandbox the
 bundle: that hides other processes' sockets.
 
-Requires macOS 12 or newer, Intel or Apple Silicon. CI verifies universal
-`arm64` + `x86_64` builds. Local builds can fall back to the host architecture.
-Generated apps are no longer checked into Git, so old binaries cannot
-silently accompany new source fixes.
+Requires macOS 12 or newer, Intel or Apple Silicon. Release and CI
+bundles verify universal `arm64` + `x86_64` builds. Local builds can
+fall back to the host architecture. Generated apps are no longer
+checked into Git, so old binaries cannot silently accompany new
+source fixes.
+
+Maintainers who need a specific unreleased commit may download the
+14-day [Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
+artifact themselves (GitHub sign-in required). Those zips are not the
+public distribution channel. PR artifacts contain proposed changes
+and are for review only.
 
 ## Build from source
 
