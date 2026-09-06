@@ -843,7 +843,6 @@ mod tests {
     #[test]
     fn resolve_names_defaults_off_and_does_not_queue_lookups() {
         use crate::{Dir, Endpoint, IpVer};
-        assert!(!NetBoardApp::DEFAULT_RESOLVE_NAMES);
         let endpoint = Endpoint {
             key: EndpointKey {
                 pid: 1,

@@ -5,7 +5,7 @@
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](docs/BUILD.md)
 
-Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Name resolution is off by default; enabling **Resolve names**, or running the CLI without `-n`, sends PTR/A queries through the system resolver. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
+Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Name resolution is off by default in the GUI; enabling **Resolve names**, or running the CLI without `-n`, sends PTR/A queries through the system resolver. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
 
 App Screenshot:
 
@@ -15,7 +15,7 @@ App Screenshot:
 
 - Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6.
 - Refreshes on a timer (default 1s). New outgoing rows are green. New incoming or listen rows are blue. State changes are yellow. Closed rows linger red on the first two refreshes where they are absent, then disappear on the third. Off-box remotes stay orange while they exist.
-- Resolves names in the background. Cells prefer `hostname (IPv4):port` when PTR and A records exist. IPv6 sockets stay in the table.
+- When **Resolve names** is on, resolves names in the background. Cells prefer `hostname (IPv4):port` when PTR and A records exist. IPv6 sockets stay in the table.
 - Builds a double-click `.app` and a Tcpvcon-style CLI in the same binary.
 
 UDP direction is **Unknown**: the socket library exposes local bindings but
