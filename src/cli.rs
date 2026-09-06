@@ -183,7 +183,7 @@ mod tests {
     fn unknown_flags_and_multiple_filters_are_rejected() {
         for values in [
             vec!["netboard", "--cli", "--bogus"],
-            vec!["netboard", "--cli", "-anc"],
+            vec!["netboard", "--cli", "-can"],
             vec!["netboard", "--cli", "first", "second"],
         ] {
             assert!(parse(&args(&values)).is_err());
