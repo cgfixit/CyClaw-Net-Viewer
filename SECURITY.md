@@ -5,7 +5,7 @@ Report vulnerabilities privately via GitHub Security Advisories on [cgfixit/Mac-
 This tool lists other processes' sockets on purpose. Do not enable App Sandbox. There is no bounty and no SLA.
 
 `cargo audit` runs weekly on `Cargo.lock`, on relevant PRs, and on relevant
-`master` pushes. Rustc is pinned at 1.85.0. Do not float `eframe` without
+`master` or `main` pushes. Rustc is pinned at 1.85.0. Do not float `eframe` without
 checking that pin still builds. The audit runs directly in CI with read-only
 permissions and preserves advisory failures; it does not publish a separate
 check run requiring write access.

@@ -11,8 +11,9 @@ smallest useful change within the user's scope; do not invent a finding quota.
 For an audit-only request, return evidence and recommendations without edits.
 For an implementation request, finish authorized work without asking again.
 Carry existing publication authorization forward; do not infer remote-write
-permission solely from the skill name. Never merge or push `master` unless the
-user explicitly requests it.
+permission solely from the skill name. Never merge or push the default branch
+(`master` today, `main` after the Settings rename) unless the user explicitly
+requests it.
 
 ## Establish the live baseline
 
@@ -23,9 +24,10 @@ user explicitly requests it.
    locate an already-known matching checkout or ask for its location; do not
    modify the unrelated repository.
 2. Inspect `git status --short --branch`, upstream, recent commits and local
-   changes. Fetch origin and record the base SHA and current head. Use current
-   `origin/master` for independent work. Fast-forward only when resyncing a
-   clean tracking branch; never reset, discard, or stash unrelated work silently.
+   changes. Fetch origin and record the base SHA and current head. Use the
+   current remote default (`origin/master` today) for independent work.
+   Fast-forward only when resyncing a clean tracking branch; never reset,
+   discard, or stash unrelated work silently.
    Use a separate worktree when an active or dirty branch must be preserved.
    If network access is unavailable, label the baseline stale and continue
    independent inspection without claiming synchronization or PR deduplication.
@@ -72,7 +74,7 @@ to the data available; neither establishes a packet's route or intent.
 ## Implement a focused change
 
 - Map affected files to the proposed review boundary. Keep independent changes
-  on `codex/<topic>` branches from master; reuse an authorized matching PR when
+  on `codex/<topic>` branches from the default branch; reuse an authorized matching PR when
   appropriate. Stack only real dependencies with the parent as the child base,
   and describe merge order. Do not duplicate another PR's fix.
 - Preserve live behavior unless fixing an evidenced defect or the user requests

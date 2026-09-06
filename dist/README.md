@@ -2,8 +2,8 @@
 
 Build locally with `./scripts/make-app.sh`, or download the artifact from a
 successful [Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
-run for the source revision you intend to use. Prefer reviewed `master`
-builds; pull-request artifacts contain proposed changes.
+run for the source revision you intend to use. Prefer reviewed default-branch
+(`master` or `main`) builds; pull-request artifacts contain proposed changes.
 
 The artifact contains `CyClaw-Net-Viewer.zip` and its SHA-256 checksum.
 Extract the outer Actions download, verify the checksum, then open the

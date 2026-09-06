@@ -29,7 +29,8 @@ Additional checks use open-source tools with no paid license key or hosted
 reporting account:
 
 - [Gitleaks CLI](https://github.com/gitleaks/gitleaks) scans full reachable
-  Git history with redacted output on PRs, master pushes, and weekly runs.
+  Git history with redacted output on PRs, default-branch (`master` or
+  `main`) pushes, and weekly runs.
 - [Actionlint](https://github.com/rhysd/actionlint) validates all workflows
   and their embedded shell; [ShellCheck](https://github.com/koalaman/shellcheck)
   also checks `scripts/*.sh`. Linux tool downloads have pinned SHA-256 hashes.
@@ -78,9 +79,32 @@ Checksums detect corruption; they do not establish a trusted publisher.
 
 ## Changes and review
 
-Use focused feature branches and draft PRs against `master`. Fill in the
-PR template, include regression coverage for changed behavior, and record
-what was and was not tested. Do not merge your own automated changes.
+The GitHub default branch is still `master`. A rename to `main` is deferred
+until a repository admin flips it in Settings; do not delete `master` or
+rewrite shared history. Open draft PRs against the current default (`master`
+today, `main` after that flip). Workflows listen to both names so CI keeps
+running across the rename.
+
+Administrator rename (Christopher), in this order:
+
+1. Open [Branches](https://github.com/cgfixit/Mac-NetViewer-EZview/branches).
+2. Next to `master`, click the pencil and rename the branch to `main`.
+3. Confirm GitHub's rename dialog. History stays intact, open PRs retarget,
+   and old `master` URLs redirect. This is reversible by renaming `main`
+   back to `master`.
+4. Confirm [Settings → General](https://github.com/cgfixit/Mac-NetViewer-EZview/settings)
+   shows Default branch `main`.
+5. Do not delete `master` if a leftover pointer remains, and do not
+   force-push shared history. After clones and bookmarks are confirmed, a
+   follow-up can drop `master` from workflow `branches:` filters.
+
+GitHub topics (`macos`, `rust`, `networking`, `egui`, `sysadmin`, `cyclaw`)
+and the About description are already set on the remote. Do not clear or
+replace them as incidental cleanup.
+
+Use focused feature branches and draft PRs against the default branch. Fill
+in the PR template, include regression coverage for changed behavior, and
+record what was and was not tested. Do not merge your own automated changes.
 
 Keep Rust 1.85.0 compatibility pins and `Cargo.lock` together. Dependency
 updates need macOS build/test validation and the Audit check. Weekly

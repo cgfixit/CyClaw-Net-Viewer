@@ -44,7 +44,7 @@ Turn on **Off-box only** when watching CyClaw telemetry-kill. Event colors still
 ## Get the app
 
 Download the artifact from a successful [Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
-run on `master` for the revision you want. GitHub sign-in is required for
+run on `master` or `main` for the revision you want. GitHub sign-in is required for
 Actions downloads, which expire after 14 days; build from source if none
 is available. PR artifacts contain proposed changes and are for review.
 No Rust is required to run a downloaded app.
