@@ -118,3 +118,57 @@ fn unknown_direction_has_no_outbound_flash_but_still_lingers() {
     assert_eq!(gone[0].highlight, Highlight::Deleted);
     assert_eq!(gone[0].linger, 2);
 }
+
+#[test]
+fn every_identity_field_distinguishes_a_new_endpoint() {
+    let original = tcp(42, 50000, 443, TcpState::Established, Dir::Out);
+    let previous = diff(&[], std::slice::from_ref(&original));
+    for field in 0..5 {
+        let mut changed = original.clone();
+        match field {
+            0 => changed.key.pid += 1,
+            1 => changed.key.proto = Proto::Udp,
+            2 => changed.key.ip_ver = IpVer::V6,
+            3 => changed.key.local.set_port(50001),
+            4 => changed.key.remote.set_port(8443),
+            _ => unreachable!(),
+        }
+        let rows = diff(&previous, std::slice::from_ref(&changed));
+        assert_eq!(rows.len(), 2, "identity field {field}");
+        assert_eq!(rows[0].endpoint.key, changed.key);
+        assert_eq!(rows[0].highlight, Highlight::NewOut);
+        assert_eq!(rows[1].endpoint.key, original.key);
+        assert_eq!(rows[1].highlight, Highlight::Deleted);
+        assert_eq!(rows[1].linger, 2);
+    }
+}
+
+#[test]
+fn metadata_changes_refresh_labels_without_a_state_change_flash() {
+    let original = tcp(42, 50000, 443, TcpState::Established, Dir::Out);
+    let previous = diff(&[], std::slice::from_ref(&original));
+    let mut renamed = original;
+    renamed.process = "renamed.test".into();
+    renamed.path = "/synthetic/renamed".into();
+    renamed.dir = Dir::In;
+    let rows = diff(&previous, &[renamed]);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].highlight, Highlight::None);
+    assert_eq!(rows[0].endpoint.process, "renamed.test");
+    assert_eq!(rows[0].endpoint.path, "/synthetic/renamed");
+    assert_eq!(rows[0].endpoint.dir, Dir::In);
+}
+
+#[test]
+fn reordering_live_endpoints_does_not_create_events() {
+    let first = tcp(42, 50000, 443, TcpState::Established, Dir::Out);
+    let second = tcp(43, 50001, 443, TcpState::Established, Dir::Out);
+    let previous = diff(&[], &[first.clone(), second.clone()]);
+    let rows = diff(&previous, &[second.clone(), first.clone()]);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].endpoint.key, second.key);
+    assert_eq!(rows[1].endpoint.key, first.key);
+    assert!(rows
+        .iter()
+        .all(|r| r.highlight == Highlight::None && r.linger == 0));
+}

@@ -19,7 +19,44 @@ The GUI and Darwin FFI cannot be built or tested natively on Windows/Linux.
 Those hosts can review source and run `cargo fmt --all -- --check`; use
 macOS CI for compilation and runtime validation.
 
-## Packaging
+## CI tools and test coverage
+
+CI runs Rust 1.85.0 formatting, Clippy, and tests natively on Apple Silicon
+(`macos-14`) and Intel (`macos-15-intel`). It also validates `Info.plist`.
+The separate Bundle workflow verifies the universal binary and signature.
+
+Additional checks use open-source tools with no paid license key or hosted
+reporting account:
+
+- [Gitleaks CLI](https://github.com/gitleaks/gitleaks) scans full reachable
+  Git history with redacted output on PRs, master pushes, and weekly runs.
+- [Actionlint](https://github.com/rhysd/actionlint) validates all workflows
+  and their embedded shell; [ShellCheck](https://github.com/koalaman/shellcheck)
+  also checks `scripts/*.sh`. Linux tool downloads have pinned SHA-256 hashes.
+- [cargo-llvm-cov](https://github.com/taiki-e/cargo-llvm-cov) runs macOS tests
+  and uploads HTML and LCOV coverage as a 14-day Actions artifact. There is
+  no percentage gate yet; use the report to identify meaningful coverage gaps.
+  Ordinary GitHub Actions runner/storage allowances still apply.
+
+Reproduce coverage on macOS:
+
+```sh
+rustup component add llvm-tools-preview
+cargo install cargo-llvm-cov --locked --version 0.6.16
+cargo llvm-cov --locked --all-features --lcov --output-path lcov.info
+cargo llvm-cov report --html
+```
+
+Unit tests live beside private helpers in `src/`. Integration tests in
+`tests/` cover diff identity/lifecycle, private CSV exports, CLI subprocess
+exit codes/output, and live loopback sockets. Run an individual suite with
+`cargo test --locked --test cli` or `cargo test --locked --test export`.
+Keep fixtures synthetic, avoid public DNS, and test PID validation without
+sending signals. CLI snapshot tests filter an impossible PID to avoid
+printing host process data. Update tool versions and hashes together;
+Dependabot updates action references, but not versions inside shell steps.
+
+## Packaging validation
 
 ```sh
 ./scripts/make-app.sh
