@@ -9,6 +9,9 @@ Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local 
 
 Crate and binary name: `netboard`. Window and bundle name: **CyClaw-Net-Viewer**. Repo: [cgfixit/Mac-NetViewer-EZview](https://github.com/cgfixit/Mac-NetViewer-EZview).
 
+App Screenshot:
+<img src="https://raw.githubusercontent.com/cgfixit/Mac-NetViewer-EZview/refs/heads/master/IMG_4212.jpeg">
+
 ## What it does
 
 - Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6.
