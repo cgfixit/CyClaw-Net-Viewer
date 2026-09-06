@@ -15,10 +15,12 @@ pub enum Highlight {
 pub struct Row {
     pub endpoint: Endpoint,
     pub highlight: Highlight,
+    /// Remaining visible deleted ticks, including the current snapshot.
     pub linger: u8,
 }
 
-/// Diff `next` against previous painted rows. Deleted rows linger 2 ticks.
+/// Deleted rows appear on exactly two refreshes after their last live snapshot:
+/// first absent refresh: 2, second: 1, third: removed. Repaints do not age rows.
 pub fn diff(prev: &[Row], next: &[Endpoint]) -> Vec<Row> {
     let live_prev: HashMap<&EndpointKey, &Row> = prev
         .iter()
@@ -32,13 +34,11 @@ pub fn diff(prev: &[Row], next: &[Endpoint]) -> Vec<Row> {
     for e in next {
         seen.insert(&e.key);
         let highlight = match live_prev.get(&e.key) {
-            None => {
-                if e.dir == Dir::In || e.dir == Dir::Listen {
-                    Highlight::NewIn
-                } else {
-                    Highlight::NewOut
-                }
-            }
+            None => match e.dir {
+                Dir::In | Dir::Listen => Highlight::NewIn,
+                Dir::Out => Highlight::NewOut,
+                Dir::Unknown => Highlight::None,
+            },
             Some(old) if old.endpoint.state != e.state => Highlight::Changed,
             Some(_) => Highlight::None,
         };
@@ -54,9 +54,10 @@ pub fn diff(prev: &[Row], next: &[Endpoint]) -> Vec<Row> {
             continue;
         }
         if r.highlight == Highlight::Deleted {
-            if r.linger > 1 {
+            let linger = r.linger.saturating_sub(1);
+            if linger > 0 {
                 let mut d = r.clone();
-                d.linger -= 1;
+                d.linger = linger;
                 out.push(d);
             }
         } else {
