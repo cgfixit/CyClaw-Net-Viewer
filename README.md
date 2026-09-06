@@ -9,14 +9,19 @@ Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local 
 
 App Screenshot:
 
-<img src="https://raw.githubusercontent.com/cgfixit/Mac-NetViewer-EZview/refs/heads/master/IMG_4212.jpeg">
+<img src="docs/assets/IMG_4212.jpeg">
 
 ## What it does
 
 - Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6.
-- Refreshes on a timer (default 1s). New outgoing rows are green. New incoming or listen rows are blue. State changes are yellow. Closed rows linger red for two ticks. Off-box remotes stay orange while they exist.
+- Refreshes on a timer (default 1s). New outgoing rows are green. New incoming or listen rows are blue. State changes are yellow. Closed rows linger red on the first two refreshes where they are absent, then disappear on the third. Off-box remotes stay orange while they exist.
 - Resolves names in the background. Cells prefer `hostname (IPv4):port` when PTR and A records exist. IPv6 sockets stay in the table.
 - Builds a double-click `.app` and a Tcpvcon-style CLI in the same binary.
+
+UDP direction is **Unknown**: the socket library exposes local bindings but
+omits remote peers, including for connected UDP. Unknown rows get no new-in/out
+flash and remain visible when **Show listeners** is off. TCP direction is a
+listening-port heuristic; see [Direction](docs/DESIGN.md#direction).
 
 ## What it does not
 
