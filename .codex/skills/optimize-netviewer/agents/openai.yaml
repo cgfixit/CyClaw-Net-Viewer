@@ -1,4 +1,4 @@
 interface:
   display_name: "Optimize NetViewer"
   short_description: "Evidence-backed macOS NetViewer improvements"
-  default_prompt: "Use $optimize-netviewer to inspect Mac-NetViewer-EZview and implement the highest-value verified improvement within my requested scope."
+  default_prompt: "Use $optimize-netviewer to inspect CyClaw-Net-Viewer and implement the highest-value verified improvement within my requested scope."

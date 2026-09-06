@@ -6,7 +6,7 @@ Use macOS 12+ with Xcode Command Line Tools (`xcode-select --install`) and
 rustup. Clone the repository and run:
 
 ```sh
-cd Mac-NetViewer-EZview
+cd CyClaw-Net-Viewer
 rustup toolchain install 1.85.0 --component rustfmt --component clippy
 ./scripts/check.sh
 cargo run --locked -- --cli -n -a
