@@ -9,5 +9,5 @@ if [ "$(uname -s)" != Darwin ]; then
 fi
 
 cargo fmt --all -- --check
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked --all-targets --all-features -- -D warnings
 cargo test --locked
