@@ -52,6 +52,11 @@ a full queue leaves the address retryable on a later frame. Shutdown disconnects
 the sender, drains accepted requests and joins workers without a cache lock.
 System DNS calls cannot be cancelled, so shutdown can wait for resolver timeouts.
 
+CLI output resolves synchronously after filtering endpoints. Each unique address
+is looked up at most once per CLI snapshot, with both answers and misses cached
+across local and remote cells. Numeric mode and unspecified addresses skip DNS.
+This cache lasts only for that snapshot; subsequent invocations resolve afresh.
+
 `socket2::SockAddr` handles Darwin IPv4/IPv6 storage, lengths and byte order for
 `getnameinfo`. Host output must contain a NUL within `NI_MAXHOST` bytes. This
 preserves PTR lookups; forward A resolution remains separate. These dependencies

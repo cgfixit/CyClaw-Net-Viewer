@@ -1,4 +1,7 @@
-use crate::dns::lookup_ip;
+use std::collections::HashMap;
+use std::net::IpAddr;
+
+use crate::dns::{lookup_ip, Resolved};
 use crate::snapshot::{csv_escape, fmt_addr, snapshot, Endpoint, TcpState};
 
 pub struct CliArgs {
@@ -72,29 +75,37 @@ fn run(args: &CliArgs) -> Result<bool, String> {
         }
     }
 
-    let name = |ip| {
-        if args.numeric {
-            None
-        } else {
-            lookup_ip(ip)
-        }
-    };
-
-    if args.csv {
-        println!("Process,PID,Proto,Dir,Local,Remote,State,Path");
-    }
-    for e in &eps {
-        print_row(e, args.csv, &name);
-    }
+    print_rows(&eps, args.csv, args.numeric, lookup_ip);
     Ok(true)
 }
 
-fn print_row(
-    e: &Endpoint,
+fn print_rows(
+    eps: &[Endpoint],
     csv: bool,
-    name: &dyn Fn(std::net::IpAddr) -> Option<crate::dns::Resolved>,
+    numeric: bool,
+    mut lookup: impl FnMut(IpAddr) -> Option<Resolved>,
 ) {
-    let fmt = |addr: std::net::SocketAddr| {
+    let mut cache = HashMap::new();
+    let mut name = |ip: IpAddr| {
+        if numeric || ip.is_unspecified() {
+            None
+        } else {
+            // Cache misses as well as answers for this snapshot only. Repeated
+            // endpoints must not repeat synchronous PTR/forward lookups.
+            cache.entry(ip).or_insert_with(|| lookup(ip)).clone()
+        }
+    };
+
+    if csv {
+        println!("Process,PID,Proto,Dir,Local,Remote,State,Path");
+    }
+    for e in eps {
+        print_row(e, csv, &mut name);
+    }
+}
+
+fn print_row(e: &Endpoint, csv: bool, name: &mut dyn FnMut(IpAddr) -> Option<Resolved>) {
+    let mut fmt = |addr: std::net::SocketAddr| {
         let r = name(addr.ip());
         fmt_addr(
             addr,
@@ -196,5 +207,62 @@ mod tests {
         assert_eq!(trunc("café", 4), "café");
         assert_eq!(trunc("🦀网络工具", 4), "🦀网络…");
         assert_eq!(trunc("ab", 1), "…");
+    }
+
+    fn endpoint(local: &str, remote: &str) -> Endpoint {
+        Endpoint {
+            key: crate::EndpointKey {
+                pid: 42,
+                proto: crate::Proto::Tcp,
+                ip_ver: crate::IpVer::V4,
+                local: local.parse().unwrap(),
+                remote: remote.parse().unwrap(),
+            },
+            state: Some(TcpState::Established),
+            dir: crate::Dir::Out,
+            process: "example".into(),
+            path: String::new(),
+        }
+    }
+
+    #[test]
+    fn repeated_endpoints_resolve_each_ip_once_per_snapshot() {
+        let mut eps = Vec::new();
+        for port in 50000..51000 {
+            eps.push(endpoint(&format!("127.0.0.1:{port}"), "192.0.2.1:443"));
+        }
+        // The same IP can also appear on opposite sides of different rows.
+        eps.push(endpoint("192.0.2.1:50000", "127.0.0.1:443"));
+        for csv in [false, true] {
+            for answer in [
+                None,
+                Some(Resolved {
+                    host: "example.test".into(),
+                    ipv4: None,
+                }),
+            ] {
+                let mut calls = Vec::new();
+                print_rows(&eps, csv, false, |ip| {
+                    calls.push(ip);
+                    answer.clone()
+                });
+                assert_eq!(calls, [eps[0].key.local.ip(), eps[0].key.remote.ip()]);
+            }
+        }
+    }
+
+    #[test]
+    fn numeric_and_unspecified_addresses_never_call_lookup() {
+        for csv in [false, true] {
+            print_rows(
+                &[endpoint("127.0.0.1:50000", "192.0.2.1:443")],
+                csv,
+                true,
+                |_| panic!("numeric output must not resolve names"),
+            );
+            print_rows(&[endpoint("0.0.0.0:0", "[::]:0")], csv, false, |_| {
+                panic!("unspecified addresses must not resolve names")
+            });
+        }
     }
 }
