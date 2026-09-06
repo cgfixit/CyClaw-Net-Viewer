@@ -4,3 +4,6 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      # @1.85.0 is the rustc pin, not an action semver line.
+      - dependency-name: dtolnay/rust-toolchain
