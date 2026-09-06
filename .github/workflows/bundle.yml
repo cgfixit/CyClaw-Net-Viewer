@@ -1,0 +1,36 @@
+name: Bundle
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundle-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+jobs:
+  app:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.85.0
+      - uses: Swatinem/rust-cache@v2
+      - name: make-app
+        run: ./scripts/make-app.sh
+      - name: check binary
+        run: |
+          test -x dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
+          lipo -info dist/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CyClaw-Net-Viewer.app
+          path: dist/CyClaw-Net-Viewer.app
+          if-no-files-found: error

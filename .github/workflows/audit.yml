@@ -1,0 +1,32 @@
+name: Audit
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 11 * * 1"
+  push:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - .github/workflows/audit.yml
+  pull_request:
+    paths:
+      - Cargo.lock
+      - Cargo.toml
+      - .github/workflows/audit.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
