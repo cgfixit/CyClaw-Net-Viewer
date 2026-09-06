@@ -16,3 +16,21 @@ Dependency downloads and GitHub operations may need approved network access.
 
 See the official [configuration documentation](https://learn.chatgpt.com/docs/config-file/config-basic)
 and [AGENTS.md documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md).
+
+## Optimize NetViewer
+
+`skills/optimize-netviewer/SKILL.md` contains the repository-specific improvement
+workflow and `agents/openai.yaml` supplies its Codex UI metadata. Invoke the
+installed skill with `$optimize-netviewer` or select it through `/skills`.
+The shared source stays under `.codex/skills` as a portable installable copy;
+for current automatic repository discovery, Codex documents `.agents/skills`.
+Install/copy the skill into your personal skill location rather than changing
+`CODEX_HOME` to this repository.
+
+For the requested legacy slash entry point, copy
+`skills/optimize-netviewer/assets/optimize-netviewer.md` into your personal
+Codex home's `prompts/optimize-netviewer.md`, then restart the CLI/IDE session.
+Invoke `/prompts:optimize-netviewer` with optional focus text. Custom prompts
+are deprecated; `$optimize-netviewer` is the skill entry point. See the official
+[skill documentation](https://learn.chatgpt.com/docs/build-skills) and
+[custom-prompt documentation](https://learn.chatgpt.com/docs/custom-prompts).
