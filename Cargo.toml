@@ -17,7 +17,7 @@ socket2 = "=0.5.10"
 image = { version = "=0.25.6", default-features = false, features = ["png"] }
 url = "=2.5.8"
 idna_adapter = "=1.2.1"
-writeable = "=0.6.1"
+writeable = "=0.6.4"
 icu_collections = "=2.0.0"
 icu_locale_core = "=2.0.0"
 icu_normalizer = "=2.0.1"
