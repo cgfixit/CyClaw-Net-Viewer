@@ -9,6 +9,7 @@ pub mod app;
 pub mod cli;
 pub mod diff;
 pub mod dns;
+pub mod export;
 pub mod kill;
 pub mod snapshot;
 

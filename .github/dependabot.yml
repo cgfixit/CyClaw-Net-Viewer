@@ -7,3 +7,8 @@ updates:
     ignore:
       # @1.85.0 is the rustc pin, not an action semver line.
       - dependency-name: dtolnay/rust-toolchain
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

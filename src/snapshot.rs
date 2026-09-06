@@ -295,6 +295,14 @@ pub fn fmt_addr(addr: SocketAddr, host: Option<&str>, ipv4: Option<Ipv4Addr>) ->
 }
 
 pub fn csv_escape(s: &str) -> String {
+    // Process names and DNS data are untrusted spreadsheet input. Quoting
+    // alone does not stop formulas; preserve the value as text on import.
+    let trimmed = s.trim_start_matches(|c: char| c.is_whitespace() || c.is_control());
+    let formula = trimmed.starts_with(['=', '+', '-', '@', '＝', '＋', '－', '＠'])
+        || s.starts_with(['\t', '\r', '\n']);
+    if formula {
+        return format!("\"'{}\"", s.replace('"', "\"\""));
+    }
     if s.contains([',', '"', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {
@@ -306,6 +314,26 @@ pub fn csv_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
+
+    #[test]
+    fn csv_quotes_delimiters_and_preserves_ordinary_text() {
+        assert_eq!(csv_escape(""), "");
+        assert_eq!(csv_escape("café"), "café");
+        assert_eq!(csv_escape("a,b"), "\"a,b\"");
+        assert_eq!(csv_escape("a\"b"), "\"a\"\"b\"");
+        assert_eq!(csv_escape("a\nb"), "\"a\nb\"");
+    }
+
+    #[test]
+    fn csv_marks_formula_like_values_as_text() {
+        for value in [
+            "=1+1", "+cmd", "-1", "@SUM(A1)", "  =1", "\tfoo", "\rfoo", "\nfoo", "＝1", "＋1",
+            "－1", "＠foo",
+        ] {
+            assert_eq!(csv_escape(value), format!("\"'{value}\""));
+        }
+        assert_eq!(csv_escape("=\"x,y\""), "\"'=\"\"x,y\"\"\"");
+    }
 
     fn sa(port: u16) -> SocketAddr {
         SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port))
