@@ -9,9 +9,23 @@ Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local 
 
 Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository is still `cgfixit/Mac-NetViewer-EZview` until the owner renames it.
 
-App Screenshot:
+## App screenshot
 
-<img src="docs/assets/IMG_4212.jpeg">
+A native macOS **Cmd-Shift-4** capture of the live table is not in this
+repository yet. The previous hero was a phone JPEG with Local and Remote
+painted over; that file is retired. Until a real PNG lands, the columns
+look like this (numeric addresses, same as CLI `-n` / **Resolve names**
+off — do not paint over Local or Remote):
+
+| Process | PID | Proto | Dir | Local | Remote | State | Path |
+| --- | ---: | --- | --- | --- | --- | --- | --- |
+| nginx | 1042 | TCP4 | Listen | `*:443` | `*:0` | LISTEN | /usr/sbin/nginx |
+| curl | 2108 | TCP4 | Out | `127.0.0.1:54321` | `127.0.0.1:443` | ESTABLISHED | /usr/bin/curl |
+| mDNSResponder | 301 | UDP4 | Unknown | `*:5353` | `*:0` |  | /usr/sbin/mDNSResponder |
+
+Needed from a Mac: a Cmd-Shift-4 PNG of the running window. Numeric
+addresses are fine. Drop it in `docs/assets/` and point this section at
+that file.
 
 ## What it does
 
