@@ -1,12 +1,17 @@
 # CyClaw-Net-Viewer
 
+[![CI](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml)
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](docs/BUILD.md)
 [![License: MIT](https://img.shields.io/github/license/cgfixit/CyClaw-Net-Viewer)](LICENSE)
 
-Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Name resolution is off by default in the GUI; enabling **Resolve names**, or running the CLI without `-n`, sends PTR queries through the system resolver. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
+macOS TCP/UDP endpoint viewer for watching process egress—especially while
+developing [CyClaw](https://github.com/cgfixit/CyClaw). Inspired by Sysinternals
+TCPView. Not affiliated with Microsoft.
 
-Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository is `cgfixit/CyClaw-Net-Viewer`.
+**Product:** CyClaw-Net-Viewer · **crate / binary:** `netboard` · **repo:**
+[`cgfixit/CyClaw-Net-Viewer`](https://github.com/cgfixit/CyClaw-Net-Viewer).
+Standalone companion for CyClaw; it does not import that project's runtime.
 
 ## App screenshot
 
@@ -20,15 +25,12 @@ Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository 
 
 ## What it does
 
-- Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6.
-- Refreshes on a timer (default 1s). New outgoing rows are green. New incoming or listen rows are blue. State changes are yellow. Closed rows linger red on the first two refreshes where they are absent, then disappear on the third. Off-box remotes stay orange while they exist.
-- Address cells retain the observed socket IP and port, with an optional `hostname (IP):port` label when **Resolve names** is on. Native IPv6 stays bracketed; IPv4-mapped addresses unwrap to IPv4. Other connections and DNS answers never replace the observed address. Name resolution is off by default.
-- Builds a double-click `.app` and a Tcpvcon-style CLI in the same binary.
+- Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6. Columns: process, PID, protocol, direction, local and remote addresses, TCP state.
+- Refreshes on a timer (default 1s) with the event colors below.
+- Keeps the observed socket IP and port in every cell. Optional reverse DNS is an untrusted label only; it is off by default in the GUI. CLI `-n` stays numeric.
+- Ships a double-click `.app` and a Tcpvcon-style CLI in the same `netboard` binary.
 
-UDP direction is **Unknown**: the socket library exposes local bindings but
-omits remote peers, including for connected UDP. Unknown rows get no new-in/out
-flash and remain visible when **Show listeners** is off. TCP direction is a
-listening-port heuristic; see [Direction](docs/DESIGN.md#direction).
+UDP remotes are typically **Unknown** (no peer from the socket library). TCP direction is a listening-port heuristic. Refresh, deletion, and address rules: [Design](docs/DESIGN.md).
 
 ## What it does not
 
@@ -72,9 +74,7 @@ bundle: that hides other processes' sockets.
 
 Requires macOS 12 or newer, Intel or Apple Silicon. Release and CI
 bundles verify universal `arm64` + `x86_64` builds. Local builds can
-fall back to the host architecture. Generated apps are no longer
-checked into Git, so old binaries cannot silently accompany new
-source fixes.
+fall back to the host architecture.
 
 Maintainers who need a specific unreleased commit may download the
 14-day [Bundle workflow](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/bundle.yml)
@@ -84,14 +84,9 @@ channel. PR artifacts contain proposed changes and are for review only.
 
 ## Build from source
 
-Rust **1.85.0** is the minimum supported version and remains the reproducible
-default in `rust-toolchain.toml`. CI also checks **current stable Rust** on
-Apple Silicon and Intel Macs: formatting, strict Clippy, tests (including
-native Bash traffic observed through NetViewer), and locked release builds.
-Weekly runs detect compatibility changes as stable advances. See the
-[CI results](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml)
-for exact compiler versions and revisions; this is macOS support, not a
-Windows/Linux port or an automated interactive GUI test.
+Rust **1.85.0** is the minimum supported version (`rust-toolchain.toml`).
+CI also checks current stable on Apple Silicon and Intel. Clone the default
+`main` branch:
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -105,9 +100,8 @@ cargo run --locked -- --cli -n -a
 ./scripts/make-app.sh --dmg    # dist/CyClaw-Net-Viewer.dmg
 ```
 
-See [docs/BUILD.md](docs/BUILD.md).
-
-To verify with the current compiler without changing the repository pin:
+See [docs/BUILD.md](docs/BUILD.md). To verify with the current compiler without
+changing the repository pin:
 
 ```bash
 rustup update stable
@@ -115,43 +109,23 @@ RUSTUP_TOOLCHAIN=stable ./scripts/check.sh
 cargo +stable build --release --locked
 ```
 
-## Egress verification and agent skills
+## Verify
 
-Run `./scripts/emulate-egress-sandbox.sh` on macOS for a bounded PASS/FAIL
-test of Bash TCP traffic, PID attribution in the collector and numeric CLI,
-and endpoint removal after closure. It uses loopback by default; see the
-[egress harness guide](docs/EGRESS_SANDBOX.md) for an optional controlled LAN
-exercise and the limits of socket observation.
+On macOS, `./scripts/check.sh` is the same gate as CI: `rustfmt`, Clippy
+(`-D warnings`), and `cargo test --locked` (including the native Bash egress
+fixture). For a focused observation and cleanup check:
 
-Three shared skills live in `.agents/skills`: `emulate-egress-sandbox`,
-`verify-netviewer-rust`, and `verify-netviewer-bundle`. Open this repository
-as your agent workspace to discover them, or copy a skill directory into
-your personal skills directory. Their scripts and guides stay in this repo.
+```bash
+./scripts/emulate-egress-sandbox.sh
+```
 
-## Privacy and exports
+The `emulate-egress-sandbox` skill in `.agents/skills` wraps that script.
+Shared skills also include `verify-netviewer-rust` and `verify-netviewer-bundle`.
+Windows and Linux cannot run this Darwin library; use the
+[macOS CI results](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml).
 
-Name resolution is off by default in the GUI. Enabling **Resolve names**
-uses the system resolver for reverse DNS labels, without an additional
-forward lookup of the returned name. Keep it off, or use CLI `-n`, to avoid new
-viewer-initiated lookups.
-Already queued GUI lookups may finish. The app has no analytics service.
-
-**Save CSV** writes the visible rows into the current working directory
-with owner-only permissions and refuses to overwrite an existing file or
-symlink. If two saves occur in the same second, wait a second and retry.
-CLI `-c` writes to stdout; shell redirection controls its file permissions.
-Formula-like text is prefixed with an apostrophe in both export paths;
-import untrusted CSV columns as text when using a spreadsheet. Exports
-contain process names, paths, and network addresses: treat them as private.
-
-## Project layout and contributing
-
-`src/` contains the Rust GUI, CLI, socket snapshots, DNS, diffing, and safety
-helpers. `tests/` holds integration tests, `scripts/` holds validation and
-packaging, `docs/` holds guides, and `tools/` holds optional PDF generators.
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and checks, [AGENTS.md](AGENTS.md)
-for agent guidance, and [.codex/README.md](.codex/README.md) for Codex setup.
+Runtime boundaries (no App Sandbox, confirmed SIGTERM, numeric CLI, private
+CSV): [SECURITY.md](SECURITY.md).
 
 ## CLI
 
@@ -170,12 +144,15 @@ netboard --cli [-a] [-c] [-n] [process|pid]
 
 ## Docs
 
+- [Design](docs/DESIGN.md)
+- [Security](SECURITY.md)
+- [Build](docs/BUILD.md)
+- [Controls](docs/CONTROLS.md)
+- [Known issues](docs/KNOWN_ISSUES.md)
+- [Egress harness](docs/EGRESS_SANDBOX.md)
+- [Contributing](CONTRIBUTING.md)
 - [User guide (PDF)](docs/CyClaw-Net-Viewer-User-Guide.pdf)
 - [How it works (PDF)](docs/CyClaw-Net-Viewer-How-It-Works.pdf)
-- [Controls](docs/CONTROLS.md)
-- [Design](docs/DESIGN.md)
-- [Known issues](docs/KNOWN_ISSUES.md)
-- [Security](SECURITY.md)
 
 ## License
 
