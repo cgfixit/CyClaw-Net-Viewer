@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use crate::dns::{lookup_ip, Resolved};
-use crate::snapshot::{csv_escape, fmt_addr, snapshot, twin_ipv4, Endpoint, TcpState};
+use crate::snapshot::{csv_escape, fmt_addr, snapshot, Endpoint, TcpState};
 
 pub struct CliArgs {
     pub all: bool,
@@ -91,7 +91,7 @@ fn print_rows(
             None
         } else {
             // Cache misses as well as answers for this snapshot only. Repeated
-            // endpoints must not repeat synchronous PTR/forward lookups.
+            // endpoints must not repeat synchronous PTR lookups.
             cache.entry(ip).or_insert_with(|| lookup(ip)).clone()
         }
     };
@@ -100,34 +100,12 @@ fn print_rows(
         println!("Process,PID,Proto,Dir,Local,Remote,State,Path");
     }
     for e in eps {
-        print_row(e, eps, csv, &mut name);
+        print_row(e, csv, &mut name);
     }
 }
 
-fn print_row(
-    e: &Endpoint,
-    current: &[Endpoint],
-    csv: bool,
-    name: &mut dyn FnMut(IpAddr) -> Option<Resolved>,
-) {
-    let twin = twin_ipv4(
-        e.key.pid,
-        e.key.proto,
-        e.key.remote,
-        current
-            .iter()
-            .map(|row| (row.key.pid, row.key.proto, row.key.remote)),
-    );
-    let mut fmt = |addr: std::net::SocketAddr, extra_ipv4: Option<std::net::Ipv4Addr>| {
-        let r = name(addr.ip());
-        fmt_addr(
-            addr,
-            r.as_ref().map(|x| x.host.as_str()),
-            r.as_ref().and_then(|x| x.ipv4).or(extra_ipv4),
-        )
-    };
-    let local = fmt(e.key.local, None);
-    let remote = fmt(e.key.remote, twin);
+fn print_row(e: &Endpoint, csv: bool, name: &mut dyn FnMut(IpAddr) -> Option<Resolved>) {
+    let (local, remote) = format_endpoints(e, name);
     if csv {
         println!(
             "{},{},{},{},{},{},{},{}",
@@ -153,6 +131,17 @@ fn print_row(
             e.path
         );
     }
+}
+
+fn format_endpoints(
+    e: &Endpoint,
+    name: &mut dyn FnMut(IpAddr) -> Option<Resolved>,
+) -> (String, String) {
+    let mut fmt = |addr: std::net::SocketAddr| {
+        let r = name(addr.ip());
+        fmt_addr(addr, r.as_ref().map(|x| x.host.as_str()))
+    };
+    (fmt(e.key.local), fmt(e.key.remote))
 }
 
 fn trunc(s: &str, n: usize) -> String {
@@ -227,7 +216,11 @@ mod tests {
             key: crate::EndpointKey {
                 pid: 42,
                 proto: crate::Proto::Tcp,
-                ip_ver: crate::IpVer::V4,
+                ip_ver: if local.parse::<std::net::SocketAddr>().unwrap().is_ipv4() {
+                    crate::IpVer::V4
+                } else {
+                    crate::IpVer::V6
+                },
                 local: local.parse().unwrap(),
                 remote: remote.parse().unwrap(),
             },
@@ -251,7 +244,6 @@ mod tests {
                 None,
                 Some(Resolved {
                     host: "example.test".into(),
-                    ipv4: None,
                 }),
             ] {
                 let mut calls = Vec::new();
@@ -265,10 +257,29 @@ mod tests {
     }
 
     #[test]
+    fn same_process_same_port_peers_keep_distinct_addresses() {
+        let eps = [
+            endpoint("127.0.0.1:50000", "192.0.2.1:443"),
+            endpoint("[::1]:50001", "[2001:db8::1]:443"),
+        ];
+        for host in [None, Some("untrusted.example")] {
+            let mut name = |_| host.map(|host: &str| Resolved { host: host.into() });
+            let v4 = format_endpoints(&eps[0], &mut name).1;
+            let v6 = format_endpoints(&eps[1], &mut name).1;
+            assert!(v4.contains("192.0.2.1"));
+            assert!(v6.contains("[2001:db8::1]"));
+            assert!(!v6.contains("192.0.2.1"));
+        }
+    }
+
+    #[test]
     fn numeric_and_unspecified_addresses_never_call_lookup() {
         for csv in [false, true] {
             print_rows(
-                &[endpoint("127.0.0.1:50000", "192.0.2.1:443")],
+                &[
+                    endpoint("127.0.0.1:50000", "192.0.2.1:443"),
+                    endpoint("[::1]:50001", "[2001:db8::1]:443"),
+                ],
                 csv,
                 true,
                 |_| panic!("numeric output must not resolve names"),

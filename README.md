@@ -4,7 +4,7 @@
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](docs/BUILD.md)
 [![License: MIT](https://img.shields.io/github/license/cgfixit/CyClaw-Net-Viewer)](LICENSE)
 
-Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Name resolution is off by default in the GUI; enabling **Resolve names**, or running the CLI without `-n`, sends PTR/A queries through the system resolver. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
+Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Name resolution is off by default in the GUI; enabling **Resolve names**, or running the CLI without `-n`, sends PTR queries through the system resolver. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
 
 Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository is `cgfixit/CyClaw-Net-Viewer`.
 
@@ -22,7 +22,7 @@ Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository 
 
 - Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6.
 - Refreshes on a timer (default 1s). New outgoing rows are green. New incoming or listen rows are blue. State changes are yellow. Closed rows linger red on the first two refreshes where they are absent, then disappear on the third. Off-box remotes stay orange while they exist.
-- Address cells prefer `hostname (IPv4):port` when **Resolve names** is on and a name plus IPv4 exist, then a unique same-process IPv4 twin (same proto and remote port) or IPv4-mapped address, then `[IPv6]:port`. Dual-stack peers stay two rows; v6-only remotes and ambiguous multi-peer twins stay IPv6. Name resolution is off by default.
+- Address cells retain the observed socket IP and port, with an optional `hostname (IP):port` label when **Resolve names** is on. Native IPv6 stays bracketed; IPv4-mapped addresses unwrap to IPv4. Other connections and DNS answers never replace the observed address. Name resolution is off by default.
 - Builds a double-click `.app` and a Tcpvcon-style CLI in the same binary.
 
 UDP direction is **Unknown**: the socket library exposes local bindings but
@@ -131,8 +131,8 @@ your personal skills directory. Their scripts and guides stay in this repo.
 ## Privacy and exports
 
 Name resolution is off by default in the GUI. Enabling **Resolve names**
-uses the system DNS resolver, including reverse lookups and sometimes
-forward A lookups. Keep it off, or use CLI `-n`, to avoid new
+uses the system resolver for reverse DNS labels, without an additional
+forward lookup of the returned name. Keep it off, or use CLI `-n`, to avoid new
 viewer-initiated lookups.
 Already queued GUI lookups may finish. The app has no analytics service.
 

@@ -10,7 +10,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::diff::{diff, Highlight, Row};
 use crate::dns::Resolver;
 use crate::kill;
-use crate::snapshot::{fmt_addr, is_offbox, snapshot, twin_ipv4, EndpointKey, Proto, TcpState};
+use crate::snapshot::{fmt_addr, is_offbox, snapshot, EndpointKey, Proto, TcpState};
 
 pub const APP_TITLE: &str = "CyClaw-Net-Viewer";
 
@@ -223,18 +223,6 @@ fn hl_colors(
     }
 }
 
-fn twin_ipv4_for(key: &EndpointKey, current: &[Row]) -> Option<std::net::Ipv4Addr> {
-    twin_ipv4(
-        key.pid,
-        key.proto,
-        key.remote,
-        current.iter().map(|r| {
-            let k = &r.endpoint.key;
-            (k.pid, k.proto, k.remote)
-        }),
-    )
-}
-
 pub fn run() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -264,7 +252,7 @@ impl eframe::App for NetBoardApp {
         self.sort_rows(&mut visible);
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
-            self.menu(ui, &visible, &rows);
+            self.menu(ui, &visible);
             ui.horizontal(|ui| {
                 if ui
                     .selectable_label(paused, if paused { "Paused" } else { "Pause" })
@@ -325,7 +313,7 @@ impl eframe::App for NetBoardApp {
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.table(ui, &visible, &rows);
+            self.table(ui, &visible);
         });
 
         self.modals(ctx);
@@ -383,11 +371,11 @@ impl NetBoardApp {
         }
     }
 
-    fn menu(&mut self, ui: &mut egui::Ui, visible: &[&Row], current: &[Row]) {
+    fn menu(&mut self, ui: &mut egui::Ui, visible: &[&Row]) {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
                 if ui.button("Save CSV").clicked() {
-                    self.save_csv(visible, current);
+                    self.save_csv(visible);
                     ui.close_menu();
                 }
                 let can_close = self.selected_established(visible).is_some();
@@ -428,7 +416,7 @@ impl NetBoardApp {
         });
     }
 
-    fn table(&mut self, ui: &mut egui::Ui, visible: &[&Row], current: &[Row]) {
+    fn table(&mut self, ui: &mut egui::Ui, visible: &[&Row]) {
         let dark = ui.visuals().dark_mode;
         let default_fg = ui.visuals().text_color();
         let mut clicked: Option<EndpointKey> = None;
@@ -492,11 +480,8 @@ impl NetBoardApp {
                         Some(c) => c,
                         None => (Color32::TRANSPARENT, default_fg),
                     };
-                    let local = self.fmt_ep(r.endpoint.key.local, None);
-                    let remote = self.fmt_ep(
-                        r.endpoint.key.remote,
-                        twin_ipv4_for(&r.endpoint.key, current),
-                    );
+                    let local = self.fmt_ep(r.endpoint.key.local);
+                    let remote = self.fmt_ep(r.endpoint.key.remote);
                     let pid_s = r.endpoint.key.pid.to_string();
                     let cells = [
                         (r.endpoint.process.as_str(), false),
@@ -580,16 +565,12 @@ impl NetBoardApp {
         }
     }
 
-    fn fmt_ep(&self, addr: std::net::SocketAddr, extra_ipv4: Option<std::net::Ipv4Addr>) -> String {
+    fn fmt_ep(&self, addr: std::net::SocketAddr) -> String {
         if self.resolve_names {
             let r = self.resolver.get(addr.ip());
-            fmt_addr(
-                addr,
-                r.as_ref().map(|x| x.host.as_str()),
-                r.as_ref().and_then(|x| x.ipv4).or(extra_ipv4),
-            )
+            fmt_addr(addr, r.as_ref().map(|x| x.host.as_str()))
         } else {
-            fmt_addr(addr, None, extra_ipv4)
+            fmt_addr(addr, None)
         }
     }
 
@@ -609,9 +590,8 @@ impl NetBoardApp {
                 if f.is_empty() {
                     return true;
                 }
-                let local = self.fmt_ep(r.endpoint.key.local, None);
-                let remote =
-                    self.fmt_ep(r.endpoint.key.remote, twin_ipv4_for(&r.endpoint.key, rows));
+                let local = self.fmt_ep(r.endpoint.key.local);
+                let remote = self.fmt_ep(r.endpoint.key.remote);
                 let mut blob = format!(
                     "{} {} {} {} {} {} {} {}",
                     r.endpoint.process,
@@ -667,15 +647,12 @@ impl NetBoardApp {
         }
     }
 
-    fn save_csv(&mut self, visible: &[&Row], current: &[Row]) {
+    fn save_csv(&mut self, visible: &[&Row]) {
         let name = csv_filename();
         let mut buf = String::from("Process,PID,Proto,Dir,Local,Remote,State,Path\n");
         for r in visible {
-            let local = self.fmt_ep(r.endpoint.key.local, None);
-            let remote = self.fmt_ep(
-                r.endpoint.key.remote,
-                twin_ipv4_for(&r.endpoint.key, current),
-            );
+            let local = self.fmt_ep(r.endpoint.key.local);
+            let remote = self.fmt_ep(r.endpoint.key.remote);
             buf.push_str(&format!(
                 "{},{},{},{},{},{},{},{}\n",
                 crate::csv_escape(&r.endpoint.process),

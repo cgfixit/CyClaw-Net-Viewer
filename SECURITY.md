@@ -19,7 +19,7 @@ check run requiring write access.
   confirmation. Zero, launchd, self, and out-of-range PIDs are refused.
   PID reuse between snapshot and confirmation remains a limitation; a PID
   is not a durable process identity. Avoid terminating stale selections.
-- GUI name resolution is off by default. Enabling it can send PTR/A
+- GUI name resolution is off by default. Enabling it can send PTR
   queries through the system resolver. Numeric CLI mode (`-n`) avoids
   lookups; disabling GUI name resolution stops new requests, but queued
   requests may complete. Cached names are untrusted labels, not verified
