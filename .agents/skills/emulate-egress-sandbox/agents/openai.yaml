@@ -1,0 +1,4 @@
+interface:
+  display_name: "Emulate Egress Sandbox"
+  short_description: "Observe native Bash traffic through NetViewer"
+  default_prompt: "Use $emulate-egress-sandbox to verify native Bash traffic and cleanup through NetViewer."

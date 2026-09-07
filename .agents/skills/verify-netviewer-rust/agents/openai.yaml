@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify NetViewer Rust"
+  short_description: "Check pinned and current Rust on both Mac CPUs"
+  default_prompt: "Use $verify-netviewer-rust to verify compiler compatibility for this revision."

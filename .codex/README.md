@@ -19,6 +19,13 @@ and [AGENTS.md documentation](https://learn.chatgpt.com/docs/agent-configuration
 
 ## Optimize NetViewer
 
+Three additional repository-discoverable skills are maintained in
+`../.agents/skills`: `emulate-egress-sandbox` for Bash traffic observation,
+`verify-netviewer-rust` for compiler compatibility, and
+`verify-netviewer-bundle` for packaging verification. Invoke them with their
+`$skill-name`. They use the repository's scripts and tests from its root;
+copying a skill to a personal installation does not copy the application.
+
 `skills/optimize-netviewer/SKILL.md` contains the repository-specific improvement
 workflow and `agents/openai.yaml` supplies its Codex UI metadata. Invoke the
 installed skill with `$optimize-netviewer` or select it through `/skills`.

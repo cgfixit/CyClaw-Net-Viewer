@@ -6,7 +6,7 @@ Use macOS 12+ with Xcode Command Line Tools (`xcode-select --install`) and
 rustup. Clone the repository and run:
 
 ```sh
-git clone https://github.com/cgfixit/Mac-NetViewer-EZview.git CyClaw-Net-Viewer
+git clone https://github.com/cgfixit/CyClaw-Net-Viewer.git CyClaw-Net-Viewer
 cd CyClaw-Net-Viewer
 rustup toolchain install 1.85.0 --component rustfmt --component clippy
 ./scripts/check.sh
@@ -22,9 +22,17 @@ macOS CI for compilation and runtime validation.
 
 ## CI tools and test coverage
 
-CI runs Rust 1.85.0 formatting, Clippy, and tests natively on Apple Silicon
-(`macos-14`) and Intel (`macos-15-intel`). It also validates `Info.plist`.
+CI runs Rust 1.85.0 and current stable formatting, Clippy, tests, and locked
+release builds natively on Apple Silicon (`macos-14`) and Intel
+(`macos-15-intel`). It also validates `Info.plist` and runs weekly.
 The separate Bundle workflow verifies the universal binary and signature.
+
+Use `RUSTUP_TOOLCHAIN=stable ./scripts/check.sh` to reproduce the stable
+matrix entry without changing the pin. The full tests include a native Bash
+TCP fixture observed by the real collector and CLI; run it alone with
+`./scripts/emulate-egress-sandbox.sh`. See [the harness guide](docs/EGRESS_SANDBOX.md).
+The Bundle workflow also checks architecture, signature, metadata, checksum,
+and numeric CLI execution after ZIP extraction.
 
 Additional checks use open-source tools with no paid license key or hosted
 reporting account:
@@ -91,12 +99,12 @@ running across the rename.
 
 Administrator rename (Christopher), in this order:
 
-1. Open [Branches](https://github.com/cgfixit/Mac-NetViewer-EZview/branches).
+1. Open [Branches](https://github.com/cgfixit/CyClaw-Net-Viewer/branches).
 2. Next to `master`, click the pencil and rename the branch to `main`.
 3. Confirm GitHub's rename dialog. History stays intact, open PRs retarget,
    and old `master` URLs redirect. This is reversible by renaming `main`
    back to `master`.
-4. Confirm [Settings → General](https://github.com/cgfixit/Mac-NetViewer-EZview/settings)
+4. Confirm [Settings → General](https://github.com/cgfixit/CyClaw-Net-Viewer/settings)
    shows Default branch `main`.
 5. Do not delete `master` if a leftover pointer remains, and do not
    force-push shared history. After clones and bookmarks are confirmed, a

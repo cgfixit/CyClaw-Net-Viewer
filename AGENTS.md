@@ -4,7 +4,7 @@
 
 CyClaw-Net-Viewer is a standalone macOS TCP/UDP endpoint viewer. The Cargo
 crate and executable remain `netboard` internally. The GitHub repository is
-still `cgfixit/Mac-NetViewer-EZview` until the owner renames it. It is not
+`cgfixit/CyClaw-Net-Viewer`. It is not
 the CyClaw AI repository and does not import that project's runtime or
 policies.
 
@@ -29,7 +29,10 @@ first and use `.github/PULL_REQUEST_TEMPLATE.md`.
 
 ## Build and validation
 
-The app requires macOS 12+, Xcode Command Line Tools, and Rust 1.85.0.
+The app requires macOS 12+, Xcode Command Line Tools, and Rust 1.85.0 or newer.
+Rust 1.85.0 remains the pinned minimum; CI also validates current stable on
+Intel and Apple Silicon. Use `RUSTUP_TOOLCHAIN=stable ./scripts/check.sh`
+for the latter; installing stable alone does not override the pin.
 Keep `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, CI, and build docs
 consistent. Compatibility pins are deliberate; do not run a blanket
 `cargo update` or raise the compiler requirement as incidental cleanup.
@@ -38,6 +41,9 @@ Run `./scripts/check.sh` on macOS for formatting, Clippy, and all tests.
 For packaging changes also run `./scripts/make-app.sh` and verify the
 signature and CLI as described in `CONTRIBUTING.md`. Use `--locked` for
 builds and tests. Add focused regression tests for behavior/security fixes.
+The native Bash egress fixture is part of `cargo test --locked`; run
+`./scripts/emulate-egress-sandbox.sh` for a focused observation/cleanup check.
+Shared verification skills live in `.agents/skills`.
 Windows and Linux cannot run this Darwin library: report that limitation
 and use the macOS CI results, never remove the platform guard to fake a pass.
 

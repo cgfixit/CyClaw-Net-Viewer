@@ -2,11 +2,11 @@
 
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](docs/BUILD.md)
-[![License: MIT](https://img.shields.io/github/license/cgfixit/Mac-NetViewer-EZview)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/cgfixit/CyClaw-Net-Viewer)](LICENSE)
 
 Live TCP/UDP endpoint table for macOS. Process, PID, protocol, direction, local and remote addresses, TCP state. Name resolution is off by default in the GUI; enabling **Resolve names**, or running the CLI without `-n`, sends PTR/A queries through the system resolver. Inspired by Sysinternals TCPView. Not affiliated with Microsoft.
 
-Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository is still `cgfixit/Mac-NetViewer-EZview` until the owner renames it.
+Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository is `cgfixit/CyClaw-Net-Viewer`.
 
 ## App screenshot
 
@@ -51,7 +51,7 @@ Turn on **Off-box only** when watching CyClaw telemetry-kill. Event colors still
 ## Get the app
 
 Download `CyClaw-Net-Viewer.zip` and `CyClaw-Net-Viewer.zip.sha256` from the
-latest [GitHub Release](https://github.com/cgfixit/Mac-NetViewer-EZview/releases/latest).
+latest [GitHub Release](https://github.com/cgfixit/CyClaw-Net-Viewer/releases/latest).
 No Rust is required to run a downloaded app. Build from source (below) if
 you prefer not to use a prebuilt binary.
 
@@ -77,18 +77,25 @@ checked into Git, so old binaries cannot silently accompany new
 source fixes.
 
 Maintainers who need a specific unreleased commit may download the
-14-day [Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
+14-day [Bundle workflow](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/bundle.yml)
 artifact themselves (GitHub sign-in required). Prefer the reviewed run for
 the exact commit you need. Those zips are not the public distribution
 channel. PR artifacts contain proposed changes and are for review only.
 
 ## Build from source
 
-Rust **1.85.0** is pinned (`rust-toolchain.toml`). Homebrew rustc is newer and is not the pin.
+Rust **1.85.0** is the minimum supported version and remains the reproducible
+default in `rust-toolchain.toml`. CI also checks **current stable Rust** on
+Apple Silicon and Intel Macs: formatting, strict Clippy, tests (including
+native Bash traffic observed through NetViewer), and locked release builds.
+Weekly runs detect compatibility changes as stable advances. See the
+[CI results](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml)
+for exact compiler versions and revisions; this is macOS support, not a
+Windows/Linux port or an automated interactive GUI test.
 
 ```bash
 export PATH="$HOME/.cargo/bin:$PATH"
-git clone https://github.com/cgfixit/Mac-NetViewer-EZview.git CyClaw-Net-Viewer
+git clone https://github.com/cgfixit/CyClaw-Net-Viewer.git CyClaw-Net-Viewer
 cd CyClaw-Net-Viewer
 rustup toolchain install 1.85.0
 ./scripts/check.sh
@@ -99,6 +106,27 @@ cargo run --locked -- --cli -n -a
 ```
 
 See [docs/BUILD.md](docs/BUILD.md).
+
+To verify with the current compiler without changing the repository pin:
+
+```bash
+rustup update stable
+RUSTUP_TOOLCHAIN=stable ./scripts/check.sh
+cargo +stable build --release --locked
+```
+
+## Egress verification and agent skills
+
+Run `./scripts/emulate-egress-sandbox.sh` on macOS for a bounded PASS/FAIL
+test of Bash TCP traffic, PID attribution in the collector and numeric CLI,
+and endpoint removal after closure. It uses loopback by default; see the
+[egress harness guide](docs/EGRESS_SANDBOX.md) for an optional controlled LAN
+exercise and the limits of socket observation.
+
+Three shared skills live in `.agents/skills`: `emulate-egress-sandbox`,
+`verify-netviewer-rust`, and `verify-netviewer-bundle`. Open this repository
+as your agent workspace to discover them, or copy a skill directory into
+your personal skills directory. Their scripts and guides stay in this repo.
 
 ## Privacy and exports
 
