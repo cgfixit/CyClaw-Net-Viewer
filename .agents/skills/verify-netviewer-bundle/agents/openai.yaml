@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify NetViewer Bundle"
+  short_description: "Verify Mac bundles and archived round trips"
+  default_prompt: "Use $verify-netviewer-bundle to validate this release candidate on macOS."

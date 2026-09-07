@@ -45,7 +45,11 @@ jobs:
           mkdir verify
           ditto -x -k CyClaw-Net-Viewer.zip verify
           test -x verify/CyClaw-Net-Viewer.app/Contents/MacOS/netboard
+          shasum -a 256 -c CyClaw-Net-Viewer.zip.sha256
+          lipo verify/CyClaw-Net-Viewer.app/Contents/MacOS/netboard -verify_arch arm64 x86_64
           codesign --verify --deep --strict verify/CyClaw-Net-Viewer.app
+          plutil -lint verify/CyClaw-Net-Viewer.app/Contents/Info.plist
+          verify/CyClaw-Net-Viewer.app/Contents/MacOS/netboard --cli -n -a 4294967295
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: CyClaw-Net-Viewer-${{ github.sha }}
