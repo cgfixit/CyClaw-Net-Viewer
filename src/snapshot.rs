@@ -316,64 +316,22 @@ pub fn numeric_ip(ip: IpAddr) -> String {
     }
 }
 
-/// Prefer `host (1.2.3.4):port` when a name exists, then a non-unspecified
-/// IPv4, then the socket's numeric form (IPv4-mapped unwrapped; native v6
-/// in brackets).
-pub fn fmt_addr(addr: SocketAddr, host: Option<&str>, ipv4: Option<Ipv4Addr>) -> String {
+/// Keep the observed socket address, with an optional untrusted DNS label.
+/// Only IPv4-mapped IPv6 addresses unwrap; DNS answers and other endpoints
+/// cannot establish that a native IPv6 peer is an IPv4 peer.
+pub fn fmt_addr(addr: SocketAddr, host: Option<&str>) -> String {
     if addr.ip().is_unspecified() {
         return format!("*:{}", addr.port());
     }
     let port = addr.port();
-    let shown = match ipv4.filter(|v| !v.is_unspecified()) {
-        Some(v) => v.to_string(),
-        None => match addr.ip() {
-            IpAddr::V6(v) if v.to_ipv4_mapped().is_none() => {
-                format!("[{}]", numeric_ip(addr.ip()))
-            }
-            _ => numeric_ip(addr.ip()),
-        },
+    let shown = match addr.ip() {
+        IpAddr::V6(v) if v.to_ipv4_mapped().is_none() => format!("[{}]", numeric_ip(addr.ip())),
+        _ => numeric_ip(addr.ip()),
     };
     if let Some(n) = host.filter(|n| !n.is_empty()) {
         return format!("{n} ({shown}):{port}");
     }
     format!("{shown}:{port}")
-}
-
-/// Display-only IPv4 for a native IPv6 remote when another current row shares
-/// `pid`, `proto`, and `remote.port()` with exactly one distinct non-unspecified
-/// IPv4. Ambiguous multi-peer sets and v6-only peers stay IPv6. IPv4-mapped
-/// remotes are ignored (those already unwrap).
-pub(crate) fn twin_ipv4(
-    pid: u32,
-    proto: Proto,
-    remote: SocketAddr,
-    current: impl IntoIterator<Item = (u32, Proto, SocketAddr)>,
-) -> Option<Ipv4Addr> {
-    let IpAddr::V6(v6) = remote.ip() else {
-        return None;
-    };
-    if v6.to_ipv4_mapped().is_some() {
-        return None;
-    }
-    let port = remote.port();
-    let mut found = None;
-    for (row_pid, row_proto, addr) in current {
-        if row_pid != pid || row_proto != proto || addr.port() != port {
-            continue;
-        }
-        let IpAddr::V4(v4) = addr.ip() else {
-            continue;
-        };
-        if v4.is_unspecified() {
-            continue;
-        }
-        match found {
-            None => found = Some(v4),
-            Some(existing) if existing == v4 => {}
-            Some(_) => return None,
-        }
-    }
-    found
 }
 
 pub fn csv_escape(s: &str) -> String {
@@ -426,112 +384,23 @@ mod tests {
     }
 
     #[test]
-    fn fmt_addr_hostname_and_ipv4() {
-        let v4 = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(8, 8, 8, 8), 443));
-        assert_eq!(fmt_addr(v4, None, None), "8.8.8.8:443");
-        assert_eq!(
-            fmt_addr(v4, Some("dns.google"), Some(Ipv4Addr::new(8, 8, 8, 8))),
-            "dns.google (8.8.8.8):443"
-        );
-        assert_eq!(fmt_addr(unspecified(), None, None), "*:0");
-        let mapped = SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0808, 0x0808)),
-            53,
-        );
-        assert_eq!(fmt_addr(mapped, None, None), "8.8.8.8:53");
-        let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 80);
-        assert_eq!(
-            fmt_addr(v6, Some("localhost"), Some(Ipv4Addr::LOCALHOST)),
-            "localhost (127.0.0.1):80"
-        );
-    }
-
-    #[test]
-    fn fmt_addr_pure_v6_without_ipv4_keeps_brackets() {
-        let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 80);
-        assert_eq!(fmt_addr(v6, None, None), "[::1]:80");
-        assert_eq!(fmt_addr(v6, None, Some(Ipv4Addr::UNSPECIFIED)), "[::1]:80");
-    }
-
-    #[test]
-    fn fmt_addr_pure_v6_prefers_supplied_ipv4() {
-        let v6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 80);
-        assert_eq!(
-            fmt_addr(v6, None, Some(Ipv4Addr::new(1, 2, 3, 4))),
-            "1.2.3.4:80"
-        );
-    }
-
-    #[test]
-    fn fmt_addr_hostname_without_ipv4_brackets_native_v6() {
-        let v6 = SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)),
-            443,
-        );
-        assert_eq!(fmt_addr(v6, Some("host"), None), "host ([2001:db8::1]):443");
-    }
-
-    #[test]
-    fn twin_ipv4_matches_same_pid_proto_port_only() {
-        let v4 = SocketAddr::from((Ipv4Addr::new(1, 2, 3, 4), 443));
-        let v6 = SocketAddr::from((Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1), 443));
-        let mapped = SocketAddr::new(
-            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0102, 0x0304)),
-            443,
-        );
-        let same = [(10, Proto::Tcp, v4), (10, Proto::Tcp, v6)];
-        assert_eq!(
-            twin_ipv4(10, Proto::Tcp, v6, same),
-            Some(Ipv4Addr::new(1, 2, 3, 4))
-        );
-        assert_eq!(twin_ipv4(11, Proto::Tcp, v6, same), None);
-        assert_eq!(
-            twin_ipv4(10, Proto::Tcp, SocketAddr::from((v6.ip(), 80)), same),
-            None
-        );
-        assert_eq!(twin_ipv4(10, Proto::Udp, v6, same), None);
-        assert_eq!(twin_ipv4(10, Proto::Tcp, v6, [(10, Proto::Tcp, v6)]), None);
-        assert_eq!(twin_ipv4(10, Proto::Tcp, mapped, same), None);
-        assert_eq!(
-            twin_ipv4(
-                10,
-                Proto::Tcp,
-                v6,
-                [(
-                    10,
-                    Proto::Tcp,
-                    SocketAddr::from((Ipv4Addr::UNSPECIFIED, 443))
-                )]
-            ),
-            None
-        );
-        let other_v4 = SocketAddr::from((Ipv4Addr::new(5, 6, 7, 8), 443));
-        assert_eq!(
-            twin_ipv4(
-                10,
-                Proto::Tcp,
-                v6,
-                [
-                    (10, Proto::Tcp, v4),
-                    (10, Proto::Tcp, other_v4),
-                    (10, Proto::Tcp, v6)
-                ]
-            ),
-            None
-        );
-        assert_eq!(
-            twin_ipv4(
-                10,
-                Proto::Tcp,
-                v6,
-                [
-                    (10, Proto::Tcp, v4),
-                    (10, Proto::Tcp, v4),
-                    (10, Proto::Tcp, v6)
-                ]
-            ),
-            Some(Ipv4Addr::new(1, 2, 3, 4))
-        );
+    fn address_labels_preserve_the_observed_peer() {
+        for (address, numeric) in [
+            ("192.0.2.1:443", "192.0.2.1:443"),
+            ("[2001:db8::1]:443", "[2001:db8::1]:443"),
+            ("[::1]:80", "[::1]:80"),
+            ("[::ffff:192.0.2.1]:443", "192.0.2.1:443"),
+        ] {
+            let addr = address.parse().unwrap();
+            assert_eq!(fmt_addr(addr, None), numeric);
+            assert_eq!(fmt_addr(addr, Some("")), numeric);
+            let (ip, port) = numeric.rsplit_once(':').unwrap();
+            assert_eq!(
+                fmt_addr(addr, Some("untrusted.example")),
+                format!("untrusted.example ({ip}):{port}")
+            );
+        }
+        assert_eq!(fmt_addr(unspecified(), Some("ignored.example")), "*:0");
     }
 
     #[test]

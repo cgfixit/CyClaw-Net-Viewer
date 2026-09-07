@@ -2,7 +2,7 @@ use crossbeam_channel::{bounded, Sender};
 use socket2::SockAddr;
 use std::collections::HashMap;
 use std::ffi::CStr;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
@@ -12,7 +12,6 @@ const QUEUE_CAPACITY: usize = 256;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub host: String,
-    pub ipv4: Option<Ipv4Addr>,
 }
 
 /// Background reverse-DNS cache. Unspecified addresses are never queued.
@@ -115,30 +114,12 @@ impl Default for Resolver {
     }
 }
 
-fn socket_ipv4(ip: IpAddr) -> Option<Ipv4Addr> {
-    match ip {
-        IpAddr::V4(v) => Some(v),
-        IpAddr::V6(v) => v.to_ipv4_mapped(),
-    }
-}
-
-fn forward_ipv4(host: &str) -> Option<Ipv4Addr> {
-    (host, 0u16)
-        .to_socket_addrs()
-        .ok()?
-        .find_map(|sa| match sa.ip() {
-            IpAddr::V4(v) => Some(v),
-            _ => None,
-        })
-}
-
 pub fn lookup_ip(ip: IpAddr) -> Option<Resolved> {
     if ip.is_unspecified() {
         return None;
     }
     let host = reverse_dns(ip)?;
-    let ipv4 = socket_ipv4(ip).or_else(|| forward_ipv4(&host));
-    Some(Resolved { host, ipv4 })
+    Some(Resolved { host })
 }
 
 fn reverse_dns(ip: IpAddr) -> Option<String> {
@@ -191,7 +172,6 @@ mod tests {
             release_rx.recv_timeout(TIMEOUT).unwrap();
             Some(Resolved {
                 host: "example.test".into(),
-                ipv4: socket_ipv4(ip),
             })
         });
         let first = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
@@ -291,11 +271,9 @@ mod tests {
             ip,
             Some(Resolved {
                 host: "example.test".into(),
-                ipv4: Some(Ipv4Addr::new(1, 2, 3, 4)),
             }),
         );
         let got = r.get(ip).expect("cached");
         assert_eq!(got.host, "example.test");
-        assert_eq!(got.ipv4, Some(Ipv4Addr::new(1, 2, 3, 4)));
     }
 }

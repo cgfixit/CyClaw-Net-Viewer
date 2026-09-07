@@ -4,7 +4,13 @@ TCPView-class viewer for Darwin (window title **CyClaw-Net-Viewer**). Official e
 
 **Off-box remotes** (any TCP/UDP peer that is not unspecified and not loopback) stay **orange** while they exist, so a telemetry-kill watch can see phone-home without waiting for a new/delete flash. Event colors still win. ICMP/ping is not in the socket table.
 
-Address cells prefer, in order: `hostname (IPv4):port` when Resolve names is on; a non-unspecified IPv4 (DNS A, IPv4-mapped unwrapping, or a unique current-row twin sharing pid/proto/remote port); otherwise `[v6]:port`. Two or more distinct IPv4 remotes on that key keep the native v6 form. Dual-stack remains two rows. The twin is display-only and does not change `EndpointKey`.
+Address cells retain the observed socket IP and port in the GUI, filtering,
+copy actions, CLI and CSV. Optional reverse DNS names are untrusted labels
+alongside that IP. Native IPv6 stays bracketed; only IPv4-mapped IPv6 unwraps.
+A shared PID/protocol/remote port does not establish that two peers are the
+same host, and a DNS A record does not identify an IPv6 socket peer. Neither
+can replace the observed address. Endpoint identity and sorting still use
+the original socket tuple.
 
 ## Snapshot
 
@@ -59,7 +65,8 @@ This cache lasts only for that snapshot; subsequent invocations resolve afresh.
 
 `socket2::SockAddr` handles Darwin IPv4/IPv6 storage, lengths and byte order for
 `getnameinfo`. Host output must contain a NUL within `NI_MAXHOST` bytes. This
-preserves PTR lookups; forward A resolution remains separate. These dependencies
+preserves PTR lookups; the viewer does not perform a follow-up forward lookup
+of the returned name. These dependencies
 require Rust 1.60 and 1.63 respectively, below the unchanged Rust 1.85 pin.
 
 `proc_name` returns a short, possibly truncated process name (not a bundle ID).
