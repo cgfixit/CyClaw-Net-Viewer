@@ -32,6 +32,8 @@ check run requiring write access.
   import/re-save behavior varies; import columns as text and do not enable
   formulas or external links in untrusted captures. CLI stdout redirection
   does not inherit the GUI's private-file creation policy.
+- Copy line and Copy remote replace Unicode control characters with spaces
+  before writing the pasteboard. Tab is kept so a copied row stays TSV.
 
 ## Build and distribution
 

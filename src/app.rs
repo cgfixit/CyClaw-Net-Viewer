@@ -10,7 +10,9 @@ use egui_extras::{Column, TableBuilder};
 use crate::diff::{diff, Highlight, Row};
 use crate::dns::Resolver;
 use crate::kill;
-use crate::snapshot::{fmt_addr, is_offbox, snapshot, EndpointKey, Proto, TcpState};
+use crate::snapshot::{
+    fmt_addr, is_offbox, sanitize_clipboard_text, snapshot, EndpointKey, Proto, TcpState,
+};
 
 pub const APP_TITLE: &str = "CyClaw-Net-Viewer";
 
@@ -552,10 +554,10 @@ impl NetBoardApp {
             self.selected = Some(k);
         }
         if let Some(s) = copy_line {
-            ui.ctx().copy_text(s);
+            ui.ctx().copy_text(sanitize_clipboard_text(&s));
         }
         if let Some(s) = copy_remote {
-            ui.ctx().copy_text(s);
+            ui.ctx().copy_text(sanitize_clipboard_text(&s));
         }
         if let Some(k) = kill {
             self.pending_kill = Some(k);

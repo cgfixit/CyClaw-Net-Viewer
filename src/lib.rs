@@ -15,6 +15,6 @@ pub mod snapshot;
 
 pub use diff::{diff, Highlight, Row};
 pub use snapshot::{
-    csv_escape, fmt_addr, is_offbox, snapshot, Dir, Endpoint, EndpointKey, IpVer, Proto,
-    SnapshotError, TcpState,
+    csv_escape, fmt_addr, is_offbox, sanitize_clipboard_text, snapshot, Dir, Endpoint, EndpointKey,
+    IpVer, Proto, SnapshotError, TcpState,
 };
