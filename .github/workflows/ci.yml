@@ -35,10 +35,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@3230091d7ef9483f601620abacc570c22cf44d22 # 1.85.0
-        with:
-          toolchain: ${{ matrix.toolchain }}
-          components: rustfmt, clippy
+      - name: Install selected toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --component rustfmt --component clippy --profile minimal --no-self-update
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Record compiler and platform
         run: |

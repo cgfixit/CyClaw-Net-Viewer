@@ -53,7 +53,7 @@ fn empty_to_listen_is_new_in() {
 #[test]
 fn established_to_close_wait_is_changed() {
     let a = tcp(1, 50000, 443, TcpState::Established, Dir::Out);
-    let prev = diff(&[], &[a.clone()]);
+    let prev = diff(&[], std::slice::from_ref(&a));
     let mut b = a;
     b.state = Some(TcpState::CloseWait);
     let rows = diff(&prev, &[b]);
@@ -88,7 +88,7 @@ fn gone_lingers_two_ticks_then_drops() {
 #[test]
 fn deleted_key_that_returns_is_new_not_changed() {
     let a = tcp(1, 50000, 443, TcpState::Established, Dir::Out);
-    let t1 = diff(&[], &[a.clone()]);
+    let t1 = diff(&[], std::slice::from_ref(&a));
     let t2 = diff(&t1, &[]);
     assert_eq!(t2[0].highlight, Highlight::Deleted);
     let t3 = diff(&t2, &[a]);
