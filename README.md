@@ -9,10 +9,6 @@ macOS TCP/UDP endpoint viewer for watching process egress—especially while
 developing [CyClaw](https://github.com/cgfixit/CyClaw). Inspired by Sysinternals
 TCPView. Not affiliated with Microsoft.
 
-**Product:** CyClaw-Net-Viewer · **crate / binary:** `netboard` · **repo:**
-[`cgfixit/CyClaw-Net-Viewer`](https://github.com/cgfixit/CyClaw-Net-Viewer).
-Standalone companion for CyClaw; it does not import that project's runtime.
-
 ## App screenshot
 
 <img src="https://github.com/cgfixit/CyClaw-Net-Viewer/blob/main/docs/image.jpg">
