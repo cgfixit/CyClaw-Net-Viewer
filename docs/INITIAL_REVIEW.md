@@ -61,8 +61,10 @@ The yanked URL warning is addressed by the patch update above.
 ## Remaining limits
 
 PID reuse can race confirmation; stronger process identity tracking would
-need dedicated Darwin design and tests. DNS has no application-level expiry
-or cache-size limit and can retain stale names for the session. Name
+need dedicated Darwin design and tests. DNS has no application-level TTL
+and can retain stale names for the session; the GUI resolver evicts
+completed answers once the cache exceeds 4096 addresses and keeps
+in-flight pending keys. Name
 resolution is enabled by default and is not a zero-network mode. CLI text
 output and clipboard rows remain raw diagnostic data; use care with control
 characters from untrusted process metadata. IPv6 display may use an IPv4

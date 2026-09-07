@@ -23,7 +23,8 @@ check run requiring write access.
   queries through the system resolver. Numeric CLI mode (`-n`) avoids
   lookups; disabling GUI name resolution stops new requests, but queued
   requests may complete. Cached names are untrusted labels, not verified
-  peer identities.
+  peer identities. The GUI resolver keeps at most 4096 completed
+  addresses; evicted names may be looked up again.
 - GUI CSV exports are created exclusively with mode 0600, without following
   existing symlinks. Existing files are never overwritten. A failed write
   may leave a partial private file and is reported as a save failure.
