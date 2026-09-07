@@ -30,7 +30,7 @@ Standalone companion for CyClaw; it does not import that project's runtime.
 - Keeps the observed socket IP and port in every cell. Optional reverse DNS is an untrusted label only; it is off by default in the GUI. CLI `-n` stays numeric.
 - Ships a double-click `.app` and a Tcpvcon-style CLI in the same `netboard` binary.
 
-UDP remotes are typically **Unknown** (no peer from the socket library). TCP direction is a listening-port heuristic. Refresh, deletion, and address rules: [Design](docs/DESIGN.md).
+UDP remotes are **Unknown**: the socket library omits peers, including connected UDP. TCP direction is a listening-port heuristic. Refresh, deletion, and address rules: [Design](docs/DESIGN.md).
 
 ## What it does not
 
