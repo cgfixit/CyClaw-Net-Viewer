@@ -61,14 +61,16 @@ The yanked URL warning is addressed by the patch update above.
 ## Remaining limits
 
 PID reuse can race confirmation; stronger process identity tracking would
-need dedicated Darwin design and tests. DNS has no application-level TTL
-and can retain stale names for the session; the GUI resolver evicts
-completed answers once the cache exceeds 4096 addresses and keeps
-in-flight pending keys. Name
-resolution is enabled by default and is not a zero-network mode. CLI text
-output and clipboard rows remain raw diagnostic data; use care with control
-characters from untrusted process metadata. IPv6 display may use an IPv4
-address from DNS and must not be treated as a verified socket peer.
+need dedicated Darwin design and tests. GUI name resolution defaults to
+off. Enabling Resolve names can send PTR queries through the system
+resolver. Numeric CLI mode (`-n`) avoids DNS. Disabling Resolve names
+stops new requests, but queued lookups may still complete. The DNS cache
+has no application-level TTL and can retain stale names for the session;
+the GUI resolver evicts completed answers once the cache exceeds 4096
+addresses and keeps in-flight pending keys. CLI text output and clipboard
+rows remain raw diagnostic data; use care with control characters from
+untrusted process metadata. IPv6 display may use an IPv4 address from DNS
+and must not be treated as a verified socket peer.
 
 Dependency advisory results come from the Audit workflow; passing first-party
 tests does not establish dependency security. Manual GUI behavior, macOS 12

@@ -334,6 +334,12 @@ pub fn fmt_addr(addr: SocketAddr, host: Option<&str>) -> String {
     format!("{shown}:{port}")
 }
 
+pub fn sanitize_clipboard_text(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 pub fn csv_escape(s: &str) -> String {
     // Process names and DNS data are untrusted spreadsheet input. Quoting
     // alone does not stop formulas; preserve the value as text on import.
@@ -354,6 +360,18 @@ pub fn csv_escape(s: &str) -> String {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, Ipv6Addr, SocketAddrV4};
+
+    #[test]
+    fn clipboard_text_replaces_controls_and_preserves_ordinary_utf8() {
+        assert_eq!(sanitize_clipboard_text(""), "");
+        assert_eq!(sanitize_clipboard_text("café"), "café");
+        assert_eq!(sanitize_clipboard_text("ok 📡"), "ok 📡");
+        assert_eq!(
+            sanitize_clipboard_text("a\u{0000}b\nc\rd\u{007f}e\u{0085}f"),
+            "a b c d e f"
+        );
+        assert_eq!(sanitize_clipboard_text("proc\tpid\tTCP4"), "proc pid TCP4");
+    }
 
     #[test]
     fn csv_quotes_delimiters_and_preserves_ordinary_text() {

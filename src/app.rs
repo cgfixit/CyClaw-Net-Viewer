@@ -10,9 +10,19 @@ use egui_extras::{Column, TableBuilder};
 use crate::diff::{diff, Highlight, Row};
 use crate::dns::Resolver;
 use crate::kill;
-use crate::snapshot::{fmt_addr, is_offbox, snapshot, EndpointKey, Proto, TcpState};
+use crate::snapshot::{
+    fmt_addr, is_offbox, sanitize_clipboard_text, snapshot, EndpointKey, Proto, TcpState,
+};
 
 pub const APP_TITLE: &str = "CyClaw-Net-Viewer";
+
+fn clipboard_tsv(fields: &[&str]) -> String {
+    fields
+        .iter()
+        .map(|field| sanitize_clipboard_text(field))
+        .collect::<Vec<_>>()
+        .join("\t")
+}
 
 struct HighlightPalette {
     new_out: (Color32, Color32),
@@ -511,21 +521,21 @@ impl NetBoardApp {
                     }
                     resp.context_menu(|ui| {
                         if ui.button("Copy line").clicked() {
-                            copy_line = Some(format!(
-                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                r.endpoint.process,
-                                r.endpoint.key.pid,
+                            let pid = r.endpoint.key.pid.to_string();
+                            copy_line = Some(clipboard_tsv(&[
+                                r.endpoint.process.as_str(),
+                                pid.as_str(),
                                 r.endpoint.proto_label(),
                                 r.endpoint.dir_label(),
-                                local,
-                                remote,
+                                local.as_str(),
+                                remote.as_str(),
                                 r.endpoint.state_label(),
-                                r.endpoint.path
-                            ));
+                                r.endpoint.path.as_str(),
+                            ]));
                             ui.close_menu();
                         }
                         if ui.button("Copy remote").clicked() {
-                            copy_remote = Some(remote.clone());
+                            copy_remote = Some(sanitize_clipboard_text(&remote));
                             ui.close_menu();
                         }
                         if ui.button("Terminate process…").clicked() {
@@ -561,7 +571,9 @@ impl NetBoardApp {
             self.pending_kill = Some(k);
         }
         if let Some(p) = reveal {
-            let _ = std::process::Command::new("open").args(["-R", &p]).spawn();
+            let _ = std::process::Command::new("open")
+                .args(finder_open_args(&p))
+                .spawn();
         }
     }
 
@@ -763,6 +775,12 @@ fn csv_filename() -> String {
     )
 }
 
+/// Argv for `open -R -- <path>`. `--` keeps a `proc_pidpath` that starts
+/// with `-` from becoming an `open` flag.
+fn finder_open_args(path: &str) -> [&str; 3] {
+    ["-R", "--", path]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -883,6 +901,23 @@ mod tests {
     }
 
     #[test]
+    fn copy_line_tsv_sanitizes_fields_and_keeps_column_tabs() {
+        assert_eq!(
+            clipboard_tsv(&[
+                "evil\nname",
+                "12",
+                "TCP4",
+                "Out",
+                "127.0.0.1:1",
+                "evil\thost (1.2.3.4):443",
+                "ESTABLISHED",
+                "/tmp/x\0y",
+            ]),
+            "evil name\t12\tTCP4\tOut\t127.0.0.1:1\tevil host (1.2.3.4):443\tESTABLISHED\t/tmp/x y"
+        );
+    }
+
+    #[test]
     fn both_palettes_cover_events_and_preserve_offbox_precedence() {
         let remote = "192.0.2.1:443".parse().unwrap();
         for dark in [false, true] {
@@ -911,5 +946,14 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn finder_reveal_argv_puts_double_dash_before_path() {
+        assert_eq!(
+            finder_open_args("/Applications/Example.app"),
+            ["-R", "--", "/Applications/Example.app"]
+        );
+        assert_eq!(finder_open_args("-secret"), ["-R", "--", "-secret"]);
     }
 }
