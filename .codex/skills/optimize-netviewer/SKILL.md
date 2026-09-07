@@ -1,20 +1,19 @@
 ---
 name: optimize-netviewer
-description: Find and implement evidence-backed correctness, performance, safety, and maintainability improvements in CyClaw-Net-Viewer (GitHub: cgfixit/Mac-NetViewer-EZview; crate/binary netboard). Use for optimize-netviewer, NetViewer optimization, targeted bottleneck investigations, or a repository improvement pass. Respect audit-only scope, deduplicate current PRs, preserve macOS and Rust compatibility, and publish focused draft PRs when requested or already authorized. Do not apply to the CyClaw AI repository or unrelated network tools.
+description: Find and implement evidence-backed correctness, performance, safety, and maintainability improvements in CyClaw-Net-Viewer (GitHub: cgfixit/CyClaw-Net-Viewer; crate/binary netboard). Use for optimize-netviewer, NetViewer optimization, targeted bottleneck investigations, or a repository improvement pass. Respect audit-only scope, deduplicate current PRs, preserve macOS and Rust compatibility, and publish focused draft PRs when requested or already authorized. Do not apply to the CyClaw AI repository or unrelated network tools.
 ---
 
 # Optimize NetViewer
 
 Run one bounded improvement pass in CyClaw-Net-Viewer
-(`cgfixit/Mac-NetViewer-EZview`). Start with a
+(`cgfixit/CyClaw-Net-Viewer`). Start with a
 reproducible defect, measured cost, or concrete validation gap. Implement the
 smallest useful change within the user's scope; do not invent a finding quota.
 For an audit-only request, return evidence and recommendations without edits.
 For an implementation request, finish authorized work without asking again.
 Carry existing publication authorization forward; do not infer remote-write
 permission solely from the skill name. Never merge or push the default branch
-(`master` today, `main` after the Settings rename) unless the user explicitly
-requests it.
+(`main`) unless the user explicitly requests it.
 
 ## Establish the live baseline
 
@@ -26,7 +25,7 @@ requests it.
    modify the unrelated repository.
 2. Inspect `git status --short --branch`, upstream, recent commits and local
    changes. Fetch origin and record the base SHA and current head. Use the
-   current remote default (`origin/master` today) for independent work.
+   current remote default (`origin/main`) for independent work.
    Fast-forward only when resyncing a clean tracking branch; never reset,
    discard, or stash unrelated work silently.
    Use a separate worktree when an active or dirty branch must be preserved.

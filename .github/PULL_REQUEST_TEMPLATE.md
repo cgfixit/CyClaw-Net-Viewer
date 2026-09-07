@@ -5,7 +5,7 @@
 ## Branch and base
 
 - Branch naming note:
-- Base branch: `master` (use `main` after the default-branch rename)
+- Base branch: `main`
 - Base commit:
 - Merge order / dependencies:
 

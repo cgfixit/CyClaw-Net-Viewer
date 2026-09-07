@@ -364,7 +364,7 @@ def story():
         ),
         P(
             "export PATH=\"$HOME/.cargo/bin:$PATH\"<br/>"
-            "git clone https://github.com/cgfixit/Mac-NetViewer-EZview.git CyClaw-Net-Viewer<br/>"
+            "git clone https://github.com/cgfixit/CyClaw-Net-Viewer.git CyClaw-Net-Viewer<br/>"
             "cd CyClaw-Net-Viewer<br/>"
             "cargo run<br/>"
             "cargo run -- --cli -n -a<br/>"
