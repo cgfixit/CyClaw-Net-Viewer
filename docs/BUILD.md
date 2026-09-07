@@ -30,6 +30,27 @@ interactive window behavior still needs a manual Mac session.
 The [egress harness](EGRESS_SANDBOX.md) is part of the test suite and can also
 be run with `./scripts/emulate-egress-sandbox.sh`.
 
+## Verified compiler baseline
+
+On 2026-09-07 UTC, revision `f9d16b95e8b63b91cb487843c08dd4b7f6f51ba9`
+passed [all four native CI jobs](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/runs/34078050328):
+
+| Compiler | Apple Silicon (`macos-14`) | Intel (`macos-15-intel`) |
+| --- | --- | --- |
+| Rust 1.85.0 | PASS | PASS |
+| Rust 1.98.1 (current stable at verification) | PASS | PASS |
+
+Each job passed formatting, Clippy with warnings denied, all 50 tests,
+the locked release build, and bundle metadata validation. The tests include
+real Darwin TCP/UDP sockets, native Bash traffic, numeric CLI attribution,
+descriptor closure, exports, and diff behavior. The separately verified
+[bundle round trip](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/runs/34077803168)
+at `9039b96` checked universal architecture, signature, checksum, extracted
+metadata, and extracted CLI execution. Subsequent code changes in `f9d16b9`
+only adjusted test references and compiler installation in CI.
+Interactive GUI operation, optional LAN egress, and every supported macOS
+release were not exercised by these runs.
+
 `.app` / DMG (ad-hoc signed, not notarized). `MACOSX_DEPLOYMENT_TARGET=12.0`. The script builds a universal `arm64+x86_64` binary when the other target/SDK is available; otherwise it ships the host arch.
 
 ```
