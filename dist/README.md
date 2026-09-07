@@ -1,12 +1,12 @@
 # Generated application bundles
 
 Public downloads use the latest
-[GitHub Release](https://github.com/cgfixit/Mac-NetViewer-EZview/releases/latest)
+[GitHub Release](https://github.com/cgfixit/CyClaw-Net-Viewer/releases/latest)
 (`CyClaw-Net-Viewer.zip` plus `CyClaw-Net-Viewer.zip.sha256`). Build
 locally with `./scripts/make-app.sh` when you want a private copy.
 
 Maintainers may also download a 14-day
-[Bundle workflow](https://github.com/cgfixit/Mac-NetViewer-EZview/actions/workflows/bundle.yml)
+[Bundle workflow](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/bundle.yml)
 artifact for a specific commit. Prefer the reviewed run for the exact commit
 you need. Pull-request artifacts contain proposed changes. Actions zips expire
 and require GitHub sign-in; they are not the public distribution
