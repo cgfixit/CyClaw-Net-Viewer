@@ -12,3 +12,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # Closed as rustc > 1.85.0 or a Cargo.toml exact pin (do not re-open).
+      - dependency-name: eframe
+      - dependency-name: egui_extras
+      - dependency-name: image
+      - dependency-name: icu_locale_core
+      - dependency-name: icu_provider
+      - dependency-name: socket2
