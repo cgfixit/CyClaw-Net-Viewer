@@ -33,7 +33,7 @@ check run requiring write access.
   formulas or external links in untrusted captures. CLI stdout redirection
   does not inherit the GUI's private-file creation policy.
 - Copy line and Copy remote replace Unicode control characters with spaces
-  before writing the pasteboard. Tab is kept so a copied row stays TSV.
+  before writing the pasteboard. Copy line joins the cleaned fields with tabs.
 
 ## Build and distribution
 

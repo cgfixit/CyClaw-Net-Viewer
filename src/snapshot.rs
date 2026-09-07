@@ -334,11 +334,9 @@ pub fn fmt_addr(addr: SocketAddr, host: Option<&str>) -> String {
     format!("{shown}:{port}")
 }
 
-/// Replace Unicode `Cc` controls with a space for clipboard payloads.
-/// Tab stays so Copy line remains TSV. Empty input stays empty.
 pub fn sanitize_clipboard_text(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_control() && c != '\t' { ' ' } else { c })
+        .map(|c| if c.is_control() { ' ' } else { c })
         .collect()
 }
 
@@ -372,10 +370,7 @@ mod tests {
             sanitize_clipboard_text("a\u{0000}b\nc\rd\u{007f}e\u{0085}f"),
             "a b c d e f"
         );
-        assert_eq!(
-            sanitize_clipboard_text("proc\tpid\tTCP4"),
-            "proc\tpid\tTCP4"
-        );
+        assert_eq!(sanitize_clipboard_text("proc\tpid\tTCP4"), "proc pid TCP4");
     }
 
     #[test]

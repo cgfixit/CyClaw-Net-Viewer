@@ -16,6 +16,14 @@ use crate::snapshot::{
 
 pub const APP_TITLE: &str = "CyClaw-Net-Viewer";
 
+fn clipboard_tsv(fields: &[&str]) -> String {
+    fields
+        .iter()
+        .map(|field| sanitize_clipboard_text(field))
+        .collect::<Vec<_>>()
+        .join("\t")
+}
+
 struct HighlightPalette {
     new_out: (Color32, Color32),
     new_in: (Color32, Color32),
@@ -513,21 +521,21 @@ impl NetBoardApp {
                     }
                     resp.context_menu(|ui| {
                         if ui.button("Copy line").clicked() {
-                            copy_line = Some(format!(
-                                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                                r.endpoint.process,
-                                r.endpoint.key.pid,
+                            let pid = r.endpoint.key.pid.to_string();
+                            copy_line = Some(clipboard_tsv(&[
+                                r.endpoint.process.as_str(),
+                                pid.as_str(),
                                 r.endpoint.proto_label(),
                                 r.endpoint.dir_label(),
-                                local,
-                                remote,
+                                local.as_str(),
+                                remote.as_str(),
                                 r.endpoint.state_label(),
-                                r.endpoint.path
-                            ));
+                                r.endpoint.path.as_str(),
+                            ]));
                             ui.close_menu();
                         }
                         if ui.button("Copy remote").clicked() {
-                            copy_remote = Some(remote.clone());
+                            copy_remote = Some(sanitize_clipboard_text(&remote));
                             ui.close_menu();
                         }
                         if ui.button("Terminate process…").clicked() {
@@ -554,10 +562,10 @@ impl NetBoardApp {
             self.selected = Some(k);
         }
         if let Some(s) = copy_line {
-            ui.ctx().copy_text(sanitize_clipboard_text(&s));
+            ui.ctx().copy_text(s);
         }
         if let Some(s) = copy_remote {
-            ui.ctx().copy_text(sanitize_clipboard_text(&s));
+            ui.ctx().copy_text(s);
         }
         if let Some(k) = kill {
             self.pending_kill = Some(k);
@@ -882,6 +890,23 @@ mod tests {
         app.enqueue_name_lookups(&rows);
         assert!(!app.resolver.contains("127.0.0.1".parse().unwrap()));
         assert!(!app.resolver.contains("192.0.2.1".parse().unwrap()));
+    }
+
+    #[test]
+    fn copy_line_tsv_sanitizes_fields_and_keeps_column_tabs() {
+        assert_eq!(
+            clipboard_tsv(&[
+                "evil\nname",
+                "12",
+                "TCP4",
+                "Out",
+                "127.0.0.1:1",
+                "evil\thost (1.2.3.4):443",
+                "ESTABLISHED",
+                "/tmp/x\0y",
+            ]),
+            "evil name\t12\tTCP4\tOut\t127.0.0.1:1\tevil host (1.2.3.4):443\tESTABLISHED\t/tmp/x y"
+        );
     }
 
     #[test]
