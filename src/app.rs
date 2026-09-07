@@ -561,7 +561,9 @@ impl NetBoardApp {
             self.pending_kill = Some(k);
         }
         if let Some(p) = reveal {
-            let _ = std::process::Command::new("open").args(["-R", &p]).spawn();
+            let _ = std::process::Command::new("open")
+                .args(finder_open_args(&p))
+                .spawn();
         }
     }
 
@@ -763,6 +765,12 @@ fn csv_filename() -> String {
     )
 }
 
+/// Argv for `open -R -- <path>`. `--` keeps a `proc_pidpath` that starts
+/// with `-` from becoming an `open` flag.
+fn finder_open_args(path: &str) -> [&str; 3] {
+    ["-R", "--", path]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,5 +919,14 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn finder_reveal_argv_puts_double_dash_before_path() {
+        assert_eq!(
+            finder_open_args("/Applications/Example.app"),
+            ["-R", "--", "/Applications/Example.app"]
+        );
+        assert_eq!(finder_open_args("-secret"), ["-R", "--", "-secret"]);
     }
 }
