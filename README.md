@@ -10,7 +10,7 @@ Binary/crate: `netboard`. Product: **CyClaw-Net-Viewer**. The GitHub repository 
 
 ## App screenshot
 
-<img src="https://github.com/cgfixit/CyClaw-Net-Viewer/blob/master/docs/image.jpg">
+<img src="https://github.com/cgfixit/CyClaw-Net-Viewer/blob/main/docs/image.jpg">
 
 | Process | PID | Proto | Dir | Local | Remote | State | Path |
 | --- | ---: | --- | --- | --- | --- | --- | --- |
