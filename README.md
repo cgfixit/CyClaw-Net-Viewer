@@ -30,7 +30,10 @@ Standalone companion for CyClaw; it does not import that project's runtime.
 - Keeps the observed socket IP and port in every cell. Optional reverse DNS is an untrusted label only; it is off by default in the GUI. CLI `-n` stays numeric.
 - Ships a double-click `.app` and a Tcpvcon-style CLI in the same `netboard` binary.
 
-UDP remotes are **Unknown**: the socket library omits peers, including connected UDP. TCP direction is a listening-port heuristic. Refresh, deletion, and address rules: [Design](docs/DESIGN.md).
+UDP direction is **Unknown** because the socket library currently omits peers
+(remote shows `*:0`), including connected UDP. TCP direction is a
+listening-port heuristic. See [Direction](docs/DESIGN.md#direction). Refresh,
+deletion, and address rules: [Design](docs/DESIGN.md).
 
 ## What it does not
 
@@ -111,9 +114,9 @@ cargo +stable build --release --locked
 
 ## Verify
 
-On macOS, `./scripts/check.sh` is the same gate as CI: `rustfmt`, Clippy
-(`-D warnings`), and `cargo test --locked` (including the native Bash egress
-fixture). For a focused observation and cleanup check:
+On macOS, `./scripts/check.sh` runs the same Rust checks as CI: `rustfmt`,
+Clippy (`-D warnings`), and `cargo test --locked` (including the native Bash
+egress fixture). For a focused observation and cleanup check:
 
 ```bash
 ./scripts/emulate-egress-sandbox.sh
