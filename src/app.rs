@@ -561,9 +561,12 @@ impl NetBoardApp {
             self.pending_kill = Some(k);
         }
         if let Some(p) = reveal {
-            let _ = std::process::Command::new("open")
+            if let Err(e) = std::process::Command::new("open")
                 .args(finder_open_args(&p))
-                .spawn();
+                .spawn()
+            {
+                self.last_save = Some(format!("Reveal failed: {e}"));
+            }
         }
     }
 
