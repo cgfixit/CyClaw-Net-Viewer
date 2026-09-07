@@ -8,23 +8,60 @@ use std::thread::{self, JoinHandle};
 
 const WORKER_COUNT: usize = 8;
 const QUEUE_CAPACITY: usize = 256;
+// Long resolve-names sessions can see thousands of unique remotes. 4096
+// completed answers stay well above the 256-slot queue, so in-flight
+// pending keys are never the eviction majority.
+const CACHE_MAX: usize = 4096;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
     pub host: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CacheValue {
+    Pending,
+    Done(Option<Resolved>),
+}
+
 /// Background reverse-DNS cache. Unspecified addresses are never queued.
 pub struct Resolver {
-    cache: Arc<Mutex<HashMap<IpAddr, Option<Resolved>>>>,
+    cache: Arc<Mutex<HashMap<IpAddr, CacheValue>>>,
+    cache_max: usize,
     tx: Option<Sender<IpAddr>>,
     workers: Vec<JoinHandle<()>>,
 }
 
 fn cache_lock(
-    m: &Mutex<HashMap<IpAddr, Option<Resolved>>>,
-) -> std::sync::MutexGuard<'_, HashMap<IpAddr, Option<Resolved>>> {
+    m: &Mutex<HashMap<IpAddr, CacheValue>>,
+) -> std::sync::MutexGuard<'_, HashMap<IpAddr, CacheValue>> {
     m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn evict_completed(cache: &mut HashMap<IpAddr, CacheValue>, cache_max: usize) {
+    while cache.len() >= cache_max {
+        let victim = cache
+            .iter()
+            .find_map(|(ip, value)| matches!(value, CacheValue::Done(_)).then_some(*ip));
+        match victim {
+            Some(ip) => {
+                cache.remove(&ip);
+            }
+            None => break,
+        }
+    }
+}
+
+fn store_entry(
+    cache: &mut HashMap<IpAddr, CacheValue>,
+    cache_max: usize,
+    ip: IpAddr,
+    value: CacheValue,
+) {
+    if !cache.contains_key(&ip) {
+        evict_completed(cache, cache_max);
+    }
+    cache.insert(ip, value);
 }
 
 impl Resolver {
@@ -33,6 +70,13 @@ impl Resolver {
     }
 
     fn with_lookup<F>(worker_count: usize, capacity: usize, lookup: F) -> Self
+    where
+        F: Fn(IpAddr) -> Option<Resolved> + Send + Sync + 'static,
+    {
+        Self::with_cache_max(worker_count, capacity, CACHE_MAX, lookup)
+    }
+
+    fn with_cache_max<F>(worker_count: usize, capacity: usize, cache_max: usize, lookup: F) -> Self
     where
         F: Fn(IpAddr) -> Option<Resolved> + Send + Sync + 'static,
     {
@@ -50,7 +94,8 @@ impl Resolver {
                     // Each receiver competes for work without a shared receive lock.
                     while let Ok(ip) = rx.recv() {
                         let name = lookup(ip);
-                        cache_lock(&cache).insert(ip, name);
+                        let mut cache = cache_lock(&cache);
+                        store_entry(&mut cache, cache_max, ip, CacheValue::Done(name));
                     }
                 }) {
                 Ok(worker) => workers.push(worker),
@@ -61,6 +106,7 @@ impl Resolver {
         // uncached instead of being marked pending forever.
         Self {
             cache,
+            cache_max,
             tx: Some(tx),
             workers,
         }
@@ -77,12 +123,15 @@ impl Resolver {
         // Keep the cache lock across enqueue + pending insertion so an instant
         // lookup cannot publish its result before pending overwrites it.
         if self.tx.as_ref().is_some_and(|tx| tx.try_send(ip).is_ok()) {
-            cache.insert(ip, None);
+            store_entry(&mut cache, self.cache_max, ip, CacheValue::Pending);
         }
     }
 
     pub fn get(&self, ip: IpAddr) -> Option<Resolved> {
-        cache_lock(&self.cache).get(&ip).cloned().flatten()
+        match cache_lock(&self.cache).get(&ip) {
+            Some(CacheValue::Done(name)) => name.clone(),
+            _ => None,
+        }
     }
 
     #[cfg(test)]
@@ -92,7 +141,18 @@ impl Resolver {
 
     #[cfg(test)]
     pub fn insert_test(&self, ip: IpAddr, name: Option<Resolved>) {
-        cache_lock(&self.cache).insert(ip, name);
+        let mut cache = cache_lock(&self.cache);
+        store_entry(&mut cache, self.cache_max, ip, CacheValue::Done(name));
+    }
+
+    #[cfg(test)]
+    fn cache_len(&self) -> usize {
+        cache_lock(&self.cache).len()
+    }
+
+    #[cfg(test)]
+    fn is_pending(&self, ip: IpAddr) -> bool {
+        matches!(cache_lock(&self.cache).get(&ip), Some(CacheValue::Pending))
     }
 }
 
@@ -191,7 +251,9 @@ mod tests {
         release_tx.send(()).unwrap();
         drop(resolver); // Joins in-flight workers and publishes both answers.
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert!(cache_lock(&cache).values().all(Option::is_some));
+        assert!(cache_lock(&cache)
+            .values()
+            .all(|v| matches!(v, CacheValue::Done(_))));
     }
 
     #[test]
@@ -275,5 +337,182 @@ mod tests {
         );
         let got = r.get(ip).expect("cached");
         assert_eq!(got.host, "example.test");
+    }
+
+    fn docnet(octet: u8) -> IpAddr {
+        IpAddr::V4(Ipv4Addr::new(203, 0, 113, octet))
+    }
+
+    #[test]
+    fn under_cap_inserts_leave_existing_entries() {
+        let resolver = Resolver::with_cache_max(1, 4, 8, |_| {
+            Some(Resolved {
+                host: "fresh.test".into(),
+            })
+        });
+        let first = docnet(1);
+        let second = docnet(2);
+        resolver.insert_test(
+            first,
+            Some(Resolved {
+                host: "one.test".into(),
+            }),
+        );
+        resolver.insert_test(
+            second,
+            Some(Resolved {
+                host: "two.test".into(),
+            }),
+        );
+        let third = docnet(3);
+        resolver.request(third);
+        let cache = Arc::clone(&resolver.cache);
+        drop(resolver);
+        let cache = cache_lock(&cache);
+        assert_eq!(cache.len(), 3);
+        assert_eq!(
+            cache.get(&first),
+            Some(&CacheValue::Done(Some(Resolved {
+                host: "one.test".into(),
+            })))
+        );
+        assert_eq!(
+            cache.get(&second),
+            Some(&CacheValue::Done(Some(Resolved {
+                host: "two.test".into(),
+            })))
+        );
+        assert_eq!(
+            cache.get(&third),
+            Some(&CacheValue::Done(Some(Resolved {
+                host: "fresh.test".into(),
+            })))
+        );
+    }
+
+    #[test]
+    fn over_cap_insert_succeeds_and_stays_at_max() {
+        const MAX: usize = 4;
+        let resolver = Resolver::with_cache_max(0, 1, MAX, |_| panic!("no lookup"));
+        for octet in 1..=MAX as u8 {
+            resolver.insert_test(
+                docnet(octet),
+                Some(Resolved {
+                    host: format!("{octet}.test"),
+                }),
+            );
+        }
+        assert_eq!(resolver.cache_len(), MAX);
+        let extra = docnet(99);
+        resolver.insert_test(
+            extra,
+            Some(Resolved {
+                host: "new.test".into(),
+            }),
+        );
+        assert_eq!(resolver.cache_len(), MAX);
+        assert!(resolver.contains(extra));
+        assert_eq!(resolver.get(extra).expect("cached").host, "new.test");
+    }
+
+    #[test]
+    fn over_cap_request_still_resolves_new_ip() {
+        const MAX: usize = 3;
+        let resolver = Resolver::with_cache_max(1, 4, MAX, |_| {
+            Some(Resolved {
+                host: "fresh.test".into(),
+            })
+        });
+        for octet in 1..=MAX as u8 {
+            resolver.insert_test(
+                docnet(octet),
+                Some(Resolved {
+                    host: format!("{octet}.test"),
+                }),
+            );
+        }
+        let extra = docnet(50);
+        resolver.request(extra);
+        let cache = Arc::clone(&resolver.cache);
+        drop(resolver);
+        let cache = cache_lock(&cache);
+        assert_eq!(cache.len(), MAX);
+        assert_eq!(
+            cache.get(&extra),
+            Some(&CacheValue::Done(Some(Resolved {
+                host: "fresh.test".into(),
+            })))
+        );
+    }
+
+    #[test]
+    fn pending_is_not_evicted_when_cache_is_full() {
+        const MAX: usize = 3;
+        let (started_tx, started_rx) = bounded(1);
+        let (release_tx, release_rx) = bounded(1);
+        let pending_ip = docnet(7);
+        let resolver = Resolver::with_cache_max(1, 4, MAX, move |ip| {
+            started_tx.send(ip).unwrap();
+            release_rx.recv_timeout(TIMEOUT).unwrap();
+            Some(Resolved {
+                host: "late.test".into(),
+            })
+        });
+        resolver.insert_test(
+            docnet(1),
+            Some(Resolved {
+                host: "1.test".into(),
+            }),
+        );
+        resolver.insert_test(
+            docnet(2),
+            Some(Resolved {
+                host: "2.test".into(),
+            }),
+        );
+        resolver.request(pending_ip);
+        assert_eq!(started_rx.recv_timeout(TIMEOUT).unwrap(), pending_ip);
+        assert!(resolver.is_pending(pending_ip));
+        resolver.insert_test(
+            docnet(3),
+            Some(Resolved {
+                host: "3.test".into(),
+            }),
+        );
+        resolver.insert_test(
+            docnet(4),
+            Some(Resolved {
+                host: "4.test".into(),
+            }),
+        );
+        assert!(resolver.contains(pending_ip));
+        assert!(resolver.is_pending(pending_ip));
+        assert_eq!(resolver.cache_len(), MAX);
+        release_tx.send(()).unwrap();
+        let cache = Arc::clone(&resolver.cache);
+        drop(resolver);
+        assert_eq!(
+            cache_lock(&cache).get(&pending_ip),
+            Some(&CacheValue::Done(Some(Resolved {
+                host: "late.test".into(),
+            })))
+        );
+    }
+
+    #[test]
+    fn negative_completed_entries_are_evictable() {
+        const MAX: usize = 2;
+        let resolver = Resolver::with_cache_max(0, 1, MAX, |_| panic!("no lookup"));
+        resolver.insert_test(docnet(1), None);
+        resolver.insert_test(docnet(2), None);
+        resolver.insert_test(
+            docnet(3),
+            Some(Resolved {
+                host: "3.test".into(),
+            }),
+        );
+        assert_eq!(resolver.cache_len(), MAX);
+        assert!(resolver.contains(docnet(3)));
+        assert_eq!(resolver.get(docnet(3)).expect("cached").host, "3.test");
     }
 }
