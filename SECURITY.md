@@ -28,6 +28,8 @@ check run requiring write access.
 - GUI CSV exports are created exclusively with mode 0600, without following
   existing symlinks. Existing files are never overwritten. A failed write
   may leave a partial private file and is reported as a save failure.
+- Reveal in Finder uses `open -R -- <path>` so a dash-leading `proc_pidpath`
+  cannot become an `open` flag. Spawn errors may be shown in the status bar.
 - Process names and other CSV text can contain spreadsheet formulas. The
   exporter quotes dangerous text and prefixes an apostrophe. Spreadsheet
   import/re-save behavior varies; import columns as text and do not enable
