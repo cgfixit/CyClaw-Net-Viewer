@@ -1,9 +1,8 @@
-# CyClaw-Net-Viewer
+# CyClaw-Net-VieweR
 
 [![CI](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml)
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
 [![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](docs/BUILD.md)
-[![License: MIT](https://img.shields.io/github/license/cgfixit/CyClaw-Net-Viewer)](LICENSE)
 
 macOS TCP/UDP endpoint viewer for watching process egress—especially while
 developing [CyClaw](https://github.com/cgfixit/CyClaw). Inspired by Sysinternals
