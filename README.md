@@ -26,16 +26,8 @@ TCPView. Not affiliated with Microsoft.
 - Keeps the observed socket IP and port in every cell. Optional reverse DNS is an untrusted label only; it is off by default in the GUI. CLI `-n` stays numeric.
 - Ships a double-click `.app` and a Tcpvcon-style CLI in the same `netboard` binary.
 
-UDP direction is **Unknown** because the socket library currently omits peers
-(remote shows `*:0`), including connected UDP. TCP direction is a
-listening-port heuristic. See [Direction](docs/DESIGN.md#direction). Refresh,
+See [Direction](docs/DESIGN.md#direction). Refresh,
 deletion, and address rules: [Design](docs/DESIGN.md).
-
-## What it does not
-
-- ICMP / ping. Those are not TCP or UDP sockets.
-- Firewall or packet capture.
-- Windows-style TCB delete. **Terminate process** confirms `SIGTERM` of the owning process.
 
 ## Colors
 
@@ -48,6 +40,21 @@ deletion, and address rules: [Design](docs/DESIGN.md).
 | Orange | Stable TCP/UDP to an off-box peer (not loopback, not `*`) |
 
 Turn on **Off-box only** when watching CyClaw telemetry-kill. Event colors still win over orange.
+
+## CLI
+
+```text
+netboard --cli [-a] [-c] [-n] [process|pid]
+```
+
+| Flag | Effect |
+| --- | --- |
+| (none) | GUI |
+| `--cli` | Snapshot to stdout. Default is ESTABLISHED TCP only |
+| `-a` | All TCP and UDP endpoints |
+| `-c` | CSV |
+| `-n` | Numeric addresses, no reverse DNS |
+| `process` or `pid` | Optional filter |
 
 ## Get the app
 
@@ -125,21 +132,6 @@ Windows and Linux cannot run this Darwin library; use the
 
 Runtime boundaries (no App Sandbox, confirmed SIGTERM, numeric CLI, private
 CSV): [SECURITY.md](SECURITY.md).
-
-## CLI
-
-```text
-netboard --cli [-a] [-c] [-n] [process|pid]
-```
-
-| Flag | Effect |
-| --- | --- |
-| (none) | GUI |
-| `--cli` | Snapshot to stdout. Default is ESTABLISHED TCP only |
-| `-a` | All TCP and UDP endpoints |
-| `-c` | CSV |
-| `-n` | Numeric addresses, no reverse DNS |
-| `process` or `pid` | Optional filter |
 
 ## Docs
 
