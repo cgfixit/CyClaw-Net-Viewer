@@ -2,9 +2,8 @@
 
 [![CI](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml)
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
-[![macOS 12+](https://img.shields.io/badge/macOS-12%2B-black.svg)](docs/BUILD.md)
 
-macOS TCP/UDP endpoint viewer for watching process egress—especially while
+macOS 12+ TCP/UDP endpoint viewer for watching process egress—especially while
 developing [CyClaw](https://github.com/cgfixit/CyClaw). Inspired by Sysinternals
 TCPView. Not affiliated with Microsoft.
 
