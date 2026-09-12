@@ -42,7 +42,21 @@ signature and CLI as described in `CONTRIBUTING.md`. Use `--locked` for
 builds and tests. Add focused regression tests for behavior/security fixes.
 The native Bash egress fixture is part of `cargo test --locked`; run
 `./scripts/emulate-egress-sandbox.sh` for a focused observation/cleanup check.
-Shared verification skills live in `.agents/skills`.
+Shared Agent Skills live in `.agents/skills` (canonical `SKILL.md` plus
+Codex `agents/openai.yaml`). Invoke `$skill-name` in Codex, or load the
+matching folder. Claude Code stubs under `.claude/skills` only redirect
+here. Copying a skill out of the repo does not copy the application.
+
+| Skill | Load when |
+| --- | --- |
+| `emulate-egress-sandbox` | Bash TCP fixture / Off-box observation |
+| `verify-netviewer-rust` | Compiler pin, lockfile, Rust CI |
+| `verify-netviewer-bundle` | `make-app.sh`, lipo, codesign, ZIP round-trip |
+| `netviewer-sandbox` | Verify / smoke / sandbox this checkout |
+| `refactor-netviewer` | Architecture or module-structure cleanup |
+| `netviewer-invariants` | Before `src/` / Cargo / scripts / workflow edits |
+
+`optimize-netviewer` remains the installable copy under `.codex/skills`.
 Windows and Linux cannot run this Darwin library: report that limitation
 and use the macOS CI results, never remove the platform guard to fake a pass.
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetViewer Sandbox"
+  short_description: "Darwin/Windows verification ladder for this checkout"
+  default_prompt: "Use $netviewer-sandbox to verify this CyClaw-Net-Viewer checkout."

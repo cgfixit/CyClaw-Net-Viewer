@@ -1,0 +1,4 @@
+interface:
+  display_name: "NetViewer Invariants"
+  short_description: "Fail-closed Darwin, pin, kill, CSV, and CI checks"
+  default_prompt: "Use $netviewer-invariants to verify this checkout still holds the NetViewer contract."
