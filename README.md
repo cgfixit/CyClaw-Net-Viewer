@@ -125,8 +125,10 @@ egress fixture). For a focused observation and cleanup check:
 ```
 
 The `emulate-egress-sandbox` skill in `.agents/skills` wraps that script.
-Shared skills also include `verify-netviewer-rust` and `verify-netviewer-bundle`.
-Windows and Linux cannot run this Darwin library; use the
+Shared skills also include `verify-netviewer-rust`, `verify-netviewer-bundle`,
+`netviewer-sandbox`, `refactor-netviewer`, and `netviewer-invariants`.
+See `AGENTS.md` for when to load each one. Windows and Linux cannot run
+this Darwin library; use the
 [macOS CI results](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml).
 
 Runtime boundaries (no App Sandbox, confirmed SIGTERM, numeric CLI, private

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Refactor NetViewer"
+  short_description: "One-concern Darwin-safe refactors for netboard"
+  default_prompt: "Use $refactor-netviewer to refactor this CyClaw-Net-Viewer checkout."
