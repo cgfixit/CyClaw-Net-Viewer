@@ -1,4 +1,4 @@
-# CyClaw-Net-VieweR
+# CyClaw-Net-Viewer
 
 [![CI](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml)
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
