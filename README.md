@@ -4,10 +4,7 @@
 [![Rust 1.85.0](https://img.shields.io/badge/rustc-1.85.0-orange.svg)](rust-toolchain.toml)
 
 macOS 12+ TCP/UDP endpoint viewer for watching process egress—especially while
-developing [CyClaw](https://github.com/cgfixit/CyClaw). Inspired by Sysinternals
-TCPView. Not affiliated with Microsoft.
-
-## App screenshot
+developing [CyClaw](https://github.com/cgfixit/CyClaw).
 
 <img src="https://github.com/cgfixit/CyClaw-Net-Viewer/blob/main/docs/image.jpg">
 
@@ -146,5 +143,8 @@ CSV): [SECURITY.md](SECURITY.md).
 - [How it works (PDF)](docs/CyClaw-Net-Viewer-How-It-Works.pdf)
 
 ## License
+
+Inspired by Sysinternals
+TCPView. Not affiliated with Microsoft.
 
 MIT. See [LICENSE](LICENSE).
