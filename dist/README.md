@@ -12,6 +12,10 @@ you need. Pull-request artifacts contain proposed changes. Actions zips expire
 and require GitHub sign-in; they are not the public distribution
 channel.
 
+Releases are produced by the manual
+[Release workflow](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/release.yml)
+(see [CONTRIBUTING.md](../CONTRIBUTING.md#cutting-a-release)).
+
 Release and Bundle archives contain `CyClaw-Net-Viewer.zip` and its
 SHA-256 checksum. Verify the checksum, then open the ZIP on macOS.
 The archive preserves the app's executable bit and signature

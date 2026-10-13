@@ -88,6 +88,29 @@ maintainer use; those Actions artifacts expire and are not the user
 distribution channel. Checksums detect corruption; they do not
 establish a trusted publisher.
 
+### Cutting a release
+
+Releases are manual. On `main`, bump `version` in `Cargo.toml`, refresh
+`Cargo.lock` (`cargo build --locked` fails until it matches), and set
+`CFBundleShortVersionString` in `Info.plist` to the same value. After that
+lands, run **Actions → Release → Run workflow** on `main` with the version
+(no leading `v`). The workflow:
+
+1. refuses non-`main` refs and any version that differs from `Cargo.toml`
+   or `Info.plist`;
+2. runs `./scripts/check.sh`, builds the universal app with
+   `./scripts/make-app.sh`, and verifies `lipo`, `codesign`, the plist,
+   and the CLI;
+3. archives with `ditto`, writes the SHA-256 file, and repeats those checks
+   on the extracted copy;
+4. in a separate job with `contents: write` and the `release` environment,
+   re-checks the checksum, refuses an existing tag or release, and creates
+   `v<version>` at the built commit with the ZIP and checksum attached.
+
+Releases are drafts by default; review the assets and notes, then publish.
+Add required reviewers to the `release` environment in repository settings
+to require a second approval before anything is written.
+
 ## Changes and review
 
 The GitHub default branch is `main`. Open draft PRs against `main`; do not
