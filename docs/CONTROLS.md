@@ -14,6 +14,8 @@
 | Right-click row | copy line, copy remote, terminate, reveal in Finder |
 | File → Save CSV | write `cyclaw-net-viewer-YYYYMMDD-HHMMSS.csv` to `~/Downloads` (else `~`); the status bar shows the path |
 | File → Terminate process | same as terminate; enabled only for ESTABLISHED TCP |
+| Options → Fallback DNS | Off (default), Quad9, or Cloudflare for public peers the system resolver cannot name |
+| `/` or Cmd+F | focus the filter; Esc clears it |
 
 Single-key shortcuts are ignored while any control has keyboard focus
 (typing in the filter, or a Tab-focused button), while the terminate

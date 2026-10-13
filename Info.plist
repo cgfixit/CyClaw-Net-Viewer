@@ -29,6 +29,8 @@
 	<string>12.0</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>With Resolve names on, CyClaw-Net-Viewer asks LAN devices for their names over mDNS when your router does not know them.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>MIT. Not affiliated with Microsoft or Sysinternals.</string>
 </dict>

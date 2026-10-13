@@ -19,7 +19,8 @@ open PRs for overlapping work first and use `.github/PULL_REQUEST_TEMPLATE.md`.
 - `src/main.rs`, `src/cli.rs`: GUI/CLI dispatch and snapshot output.
 - `src/snapshot.rs`: Darwin socket enumeration, process metadata, formatting.
 - `src/diff.rs`: endpoint identity and highlight lifecycle.
-- `src/dns.rs`: background PTR/A resolution and cache.
+- `src/dns.rs`: background PTR resolution, cache, and GUI lookup chain.
+- `src/ptr.rs`: LAN mDNS and opt-in public-resolver PTR fallbacks (wire format).
 - `src/app.rs`: egui table, controls, export, termination confirmation.
 - `src/kill.rs`, `src/export.rs`: process signaling and exclusive CSV writes.
 - `tests/`: diff regression cases and a live loopback listener test.
