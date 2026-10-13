@@ -10,6 +10,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::diff::{diff, Highlight, Row};
 use crate::dns::Resolver;
 use crate::kill;
+use crate::ptr::Fallback;
 use crate::snapshot::{
     fmt_addr, is_offbox, sanitize_clipboard_text, snapshot, EndpointKey, Proto, TcpState,
 };
@@ -427,7 +428,7 @@ impl NetBoardApp {
             .show_ui(ui, |ui| self.rate_choices(ui));
         ui.separator();
         ui.checkbox(&mut self.resolve_names, "Resolve names").on_hover_text(
-            "Reverse-DNS remote IPs (N). Sends PTR queries; names are untrusted labels and the IP stays visible.",
+            "Reverse-DNS addresses (N). Sends PTR queries via the system resolver, LAN mDNS, and the optional fallback in Options. Names are untrusted labels; the IP stays visible.",
         );
         ui.checkbox(&mut self.color_offbox, "Color remotes")
             .on_hover_text("Orange fill for stable endpoints whose peer is off this Mac");
@@ -525,6 +526,23 @@ impl NetBoardApp {
                 ui.separator();
                 ui.label("Refresh rate");
                 self.rate_choices(ui);
+                ui.separator();
+                ui.label("Fallback DNS (with Resolve names)")
+                    .on_hover_text("Used only when the system resolver has no PTR answer");
+                let current = self.resolver.fallback();
+                for choice in Fallback::ALL {
+                    let tip = match choice {
+                        Fallback::Off => "System resolver first; LAN peers then get one mDNS query on the local link. Nothing else leaves this Mac.",
+                        _ => "Also ask this public resolver over UDP/53 about public peer IPs the system cannot name. Sends those IPs to the provider in cleartext; private and special addresses are never sent.",
+                    };
+                    if ui
+                        .radio(current == choice, choice.label())
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        self.resolver.set_fallback(choice);
+                    }
+                }
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("About").clicked() {
