@@ -243,7 +243,7 @@ fn hl_colors(
 pub fn run() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1280.0, 720.0])
+            .with_inner_size([1440.0, 820.0])
             .with_min_inner_size([800.0, 400.0])
             .with_title(APP_TITLE),
         ..Default::default()
@@ -440,7 +440,7 @@ impl NetBoardApp {
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !self.filter.is_empty()
                 && ui
-                    .small_button("✕")
+                    .small_button("✖")
                     .on_hover_text("Clear filter (Esc)")
                     .clicked()
             {
@@ -566,9 +566,9 @@ impl NetBoardApp {
         let mut header = |ui: &mut egui::Ui, col: SortCol, label: &str, tip: &str| {
             let mark = if self.sort == col {
                 if self.sort_asc {
-                    " ▾"
+                    " ⏷"
                 } else {
-                    " ▴"
+                    " ⏶"
                 }
             } else {
                 ""
@@ -591,11 +591,11 @@ impl NetBoardApp {
             .min_scrolled_height(120.0)
             .sense(Sense::click())
             .column(Column::initial(140.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(60.0))
-            .column(Column::initial(220.0))
-            .column(Column::initial(220.0))
+            .column(Column::initial(56.0))
+            .column(Column::initial(52.0))
+            .column(Column::initial(64.0))
+            .column(Column::initial(250.0))
+            .column(Column::initial(330.0))
             .column(Column::initial(110.0))
             .column(Column::remainder())
             .header(24.0, |mut row| {
@@ -642,20 +642,44 @@ impl NetBoardApp {
                     let pid_s = r.endpoint.key.pid.to_string();
                     let process = sanitize_clipboard_text(&r.endpoint.process);
                     let path = sanitize_clipboard_text(&r.endpoint.path);
+                    // (text, monospace, byte length of a resolved-name prefix)
                     let cells = [
-                        (process.as_str(), false),
-                        (pid_s.as_str(), true),
-                        (r.endpoint.proto_label(), true),
-                        (r.endpoint.dir_label(), false),
-                        (local.as_str(), true),
-                        (remote.as_str(), true),
-                        (r.endpoint.state_label(), true),
-                        (path.as_str(), false),
+                        (process.as_str(), false, None),
+                        (pid_s.as_str(), true, None),
+                        (r.endpoint.proto_label(), true, None),
+                        (r.endpoint.dir_label(), false, None),
+                        (
+                            local.as_str(),
+                            true,
+                            self.name_len(r.endpoint.key.local, &local),
+                        ),
+                        (
+                            remote.as_str(),
+                            true,
+                            self.name_len(r.endpoint.key.remote, &remote),
+                        ),
+                        (r.endpoint.state_label(), true, None),
+                        (path.as_str(), false, None),
                     ];
-                    for (c, mono) in cells {
+                    for (c, mono, name_len) in cells {
                         row.col(|ui| {
+                            // Widen fills across the column gap so a colored
+                            // row reads as one band; keep the row gap visible.
+                            let gap = ui.spacing().item_spacing.x / 2.0;
+                            let band = ui.max_rect().expand2(Vec2::new(gap, 0.0));
                             if bg != Color32::TRANSPARENT {
-                                ui.painter().rect_filled(ui.max_rect(), 0.0, bg);
+                                ui.painter().rect_filled(band, 0.0, bg);
+                            }
+                            if selected {
+                                // Fills hide the selection tint; outline it instead.
+                                let stroke = ui.visuals().selection.stroke;
+                                let stroke = egui::Stroke::new(2.0_f32, stroke.color);
+                                ui.painter().hline(band.x_range(), band.top(), stroke);
+                                ui.painter().hline(band.x_range(), band.bottom(), stroke);
+                            }
+                            if let Some(n) = name_len {
+                                address_with_name(ui, &c[..n], &c[n..], fg);
+                                return;
                             }
                             let mut t = RichText::new(c).color(fg);
                             if mono {
@@ -735,6 +759,17 @@ impl NetBoardApp {
                 Err(e) => self.last_save = Some(format!("Reveal failed: {e}")),
             }
         }
+    }
+
+    /// Length of the DNS label prefixed to `shown` (from `fmt_ep(addr)`).
+    /// Checked against the text itself: a lookup can land between calls.
+    fn name_len(&self, addr: std::net::SocketAddr, shown: &str) -> Option<usize> {
+        if !self.resolve_names || addr.ip().is_unspecified() {
+            return None;
+        }
+        let host = self.resolver.get(addr.ip())?.host;
+        let rest = shown.strip_prefix(host.as_str())?;
+        (!host.is_empty() && rest.starts_with(" (")).then_some(host.len())
     }
 
     fn fmt_ep(&self, addr: std::net::SocketAddr) -> String {
@@ -904,6 +939,24 @@ impl NetBoardApp {
             }
         }
     }
+}
+
+/// `name (ip):port` cell that elides only the untrusted name, so the
+/// observed IP and port always stay visible however narrow the column.
+fn address_with_name(ui: &mut egui::Ui, name: &str, tail: &str, fg: Color32) {
+    let font = egui::TextStyle::Monospace.resolve(ui.style());
+    let tail_w = ui.fonts(|f| f.layout_no_wrap(tail.to_owned(), font.clone(), fg).size().x);
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let name_w = (ui.available_width() - tail_w).max(0.0);
+    let resp = ui
+        .allocate_ui(Vec2::new(name_w, ui.available_height()), |ui| {
+            ui.add(egui::Label::new(RichText::new(name).monospace().color(fg)).truncate())
+        })
+        .inner;
+    ui.add(egui::Label::new(RichText::new(tail).monospace().color(fg)).truncate());
+    resp.on_hover_text(format!(
+        "{name}{tail}\nName from reverse DNS: an untrusted label"
+    ));
 }
 
 fn legend(ui: &mut egui::Ui, dark: bool) {
