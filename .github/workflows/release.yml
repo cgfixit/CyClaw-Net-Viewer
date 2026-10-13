@@ -1,0 +1,166 @@
+name: Release
+
+# Manual only: a maintainer chooses the version and the commit on main.
+# Build/verify runs read-only; only the publish job may write a release.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without the leading v (must match Cargo.toml and Info.plist), e.g. 0.1.2"
+        required: true
+        type: string
+      draft:
+        description: "Create the release as a draft (publish it by hand after review)"
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark the release as a pre-release"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  MACOSX_DEPLOYMENT_TARGET: "12.0"
+
+jobs:
+  build:
+    name: Build and verify universal app
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Require the default branch
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Releases are cut from main only (got $GITHUB_REF)."
+          exit 1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check version input matches Cargo.toml and Info.plist
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::version must look like 1.2.3 or 1.2.3-rc.1 (no leading v)"
+            exit 1
+          fi
+          cargo_version="$(awk -F'"' '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version = /{print $2; exit}' Cargo.toml)"
+          plist_version="$(plutil -extract CFBundleShortVersionString raw Info.plist)"
+          echo "input=$VERSION Cargo.toml=$cargo_version Info.plist=$plist_version"
+          if [ "$cargo_version" != "$VERSION" ] || [ "$plist_version" != "$VERSION" ]; then
+            echo "::error::Bump Cargo.toml, Cargo.lock and Info.plist to $VERSION on main before releasing."
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@3230091d7ef9483f601620abacc570c22cf44d22 # 1.85.0
+        with:
+          toolchain: 1.85.0
+          components: rustfmt, clippy
+      # No rust-cache: release binaries are built from a clean target dir.
+      - name: Format, Clippy, and tests
+        run: ./scripts/check.sh
+      - name: make-app
+        run: ./scripts/make-app.sh
+      - name: Check bundle
+        run: |
+          APP=dist/CyClaw-Net-Viewer.app
+          test -x "$APP/Contents/MacOS/netboard"
+          lipo "$APP/Contents/MacOS/netboard" -verify_arch arm64 x86_64
+          codesign --verify --deep --strict "$APP"
+          plutil -lint "$APP/Contents/Info.plist"
+          "$APP/Contents/MacOS/netboard" --cli -n -a > /dev/null
+      - name: Archive, checksum, and round-trip verify
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent dist/CyClaw-Net-Viewer.app dist/CyClaw-Net-Viewer.zip
+          cd dist
+          shasum -a 256 CyClaw-Net-Viewer.zip > CyClaw-Net-Viewer.zip.sha256
+          mkdir verify
+          ditto -x -k CyClaw-Net-Viewer.zip verify
+          shasum -a 256 -c CyClaw-Net-Viewer.zip.sha256
+          lipo verify/CyClaw-Net-Viewer.app/Contents/MacOS/netboard -verify_arch arm64 x86_64
+          codesign --verify --deep --strict verify/CyClaw-Net-Viewer.app
+          plutil -lint verify/CyClaw-Net-Viewer.app/Contents/Info.plist
+          verify/CyClaw-Net-Viewer.app/Contents/MacOS/netboard --cli -n -a 4294967295
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ github.sha }}
+          path: |
+            dist/CyClaw-Net-Viewer.zip
+            dist/CyClaw-Net-Viewer.zip.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Add required reviewers to this environment in repository settings to
+    # gate publishing on a second approval.
+    environment: release
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ inputs.version }}
+      DRAFT: ${{ inputs.draft }}
+      PRERELEASE: ${{ inputs.prerelease }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ github.sha }}
+          path: dist
+      - name: Re-verify checksum after transfer
+        working-directory: dist
+        run: sha256sum --check --strict CyClaw-Net-Viewer.zip.sha256
+      - name: Refuse to overwrite an existing tag or release
+        run: |
+          TAG="v$VERSION"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "::error::Release $TAG already exists."
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" > /dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists; pick a new version."
+            exit 1
+          fi
+      - name: Create release
+        run: |
+          TAG="v$VERSION"
+          SUM="$(cut -d' ' -f1 dist/CyClaw-Net-Viewer.zip.sha256)"
+          cat > notes.md <<EOF
+          Universal (\`arm64\` + \`x86_64\`) macOS 12+ app built from \`$GITHUB_SHA\`
+          by [workflow run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
+
+          SHA-256 \`CyClaw-Net-Viewer.zip\`: \`$SUM\`
+
+          \`\`\`bash
+          shasum -a 256 -c CyClaw-Net-Viewer.zip.sha256
+          ditto -x -k CyClaw-Net-Viewer.zip .
+          codesign --verify --deep --strict CyClaw-Net-Viewer.app
+          open CyClaw-Net-Viewer.app
+          \`\`\`
+
+          Ad-hoc signed, not notarized. Gatekeeper may ask for a per-app
+          approval; do not disable Gatekeeper system-wide.
+          EOF
+          flags=()
+          if [ "$DRAFT" = "true" ]; then flags+=(--draft); fi
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "CyClaw-Net-Viewer $VERSION" \
+            --notes-file notes.md \
+            --generate-notes \
+            "${flags[@]}" \
+            dist/CyClaw-Net-Viewer.zip \
+            dist/CyClaw-Net-Viewer.zip.sha256
