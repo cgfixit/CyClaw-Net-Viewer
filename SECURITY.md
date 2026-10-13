@@ -29,7 +29,14 @@ check run requiring write access.
   requests may complete. PTR answers are kept only when they are a plain
   ASCII hostname (letters, digits, `-`, `_`, dots; at most 253 bytes;
   non-numeric last label), so an answer cannot imitate an IP address or
-  carry spaces, controls, or bidi marks. Cached names are still untrusted
+  carry spaces, controls, or bidi marks. When the system resolver has no
+  answer, a LAN peer (RFC 1918 / link-local IPv4) gets one mDNS query on
+  the local link. **Options → Fallback DNS** is Off by default; choosing
+  Quad9 or Cloudflare sends globally routable peer IPs that the system
+  cannot name to that provider in cleartext over UDP/53. Private, loopback,
+  documentation, and other special-purpose addresses are never sent to it.
+  Fallback replies must match the query ID, source, and question name.
+  Misses are retried after two minutes. Cached names are still untrusted
   labels, not verified peer identities. The GUI resolver keeps at most 4096 completed
   addresses; evicted names may be looked up again.
 - GUI CSV exports go to `~/Downloads` (or `~` when that folder is missing)

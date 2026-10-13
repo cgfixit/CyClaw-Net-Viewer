@@ -53,10 +53,35 @@ A returning endpoint is new again. Pausing or a failed refresh does not age rows
 ## DNS workers and FFI
 
 Eight workers receive from a bounded 256-request `crossbeam-channel` queue.
-Duplicate pending/completed lookups stay suppressed, including negative answers;
-a full queue leaves the address retryable on a later frame. Shutdown disconnects
+Duplicate pending/completed lookups stay suppressed. A negative answer is
+suppressed for two minutes, then retried, so a transient router or resolver
+failure does not hide a name for the whole session; changing the fallback
+setting retries misses at once. A full queue leaves the address retryable
+on a later frame. Shutdown disconnects
 the sender, drains accepted requests and joins workers without a cache lock.
 System DNS calls cannot be cancelled, so shutdown can wait for resolver timeouts.
+
+### GUI fallback chain (`src/ptr.rs`)
+
+1. `getnameinfo` (hosts file, router/ISP DNS, mDNSResponder).
+2. No answer and the peer is RFC 1918 or IPv4 link-local: one legacy unicast
+   mDNS PTR query (RFC 6762 section 6.7) to `224.0.0.251:5353` from an
+   ephemeral port, 800 ms window. Bonjour/Avahi hosts publish reverse records
+   for their own addresses even when the router has none. Only replies from
+   LAN-scoped sources are read; the packet never leaves the link.
+3. No answer, the peer is globally routable unicast, and the user picked
+   Quad9 or Cloudflare in Options: a recursive PTR query over UDP/53 to that
+   address, 1.2 s window, one retry on timeout, none on NXDOMAIN. Replies
+   must come from the exact server address and port.
+
+Loopback, multicast, documentation, CGNAT, benchmarking, reserved and IPv6
+link-local/ULA addresses never go past step 1. Queries use a random ID and
+OS-chosen port; replies must echo the ID, set QR, carry NOERROR without TC,
+and answer the queried owner name (in-message CNAME chains for RFC 2317
+delegation are followed up to 8 hops). Name decoding rejects forward or
+looping compression pointers, labels containing dots or non-printable bytes,
+and names over 255 bytes. Every answer, from any step, must then pass the
+plain-hostname rule. The CLI stays on step 1 only.
 
 CLI output resolves synchronously after filtering endpoints. Each unique address
 is looked up at most once per CLI snapshot, with both answers and misses cached

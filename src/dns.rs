@@ -3,8 +3,12 @@ use socket2::SockAddr;
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
+
+use crate::ptr::{self, Fallback, Scope};
 
 const WORKER_COUNT: usize = 8;
 const QUEUE_CAPACITY: usize = 256;
@@ -12,6 +16,9 @@ const QUEUE_CAPACITY: usize = 256;
 // completed answers stay well above the 256-slot queue, so in-flight
 // pending keys are never the eviction majority.
 const CACHE_MAX: usize = 4096;
+// A miss (router without PTR data, transient resolver failure) is retried
+// after this long instead of hiding that peer's name for the whole session.
+const NEGATIVE_TTL: Duration = Duration::from_secs(120);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Resolved {
@@ -21,13 +28,24 @@ pub struct Resolved {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CacheValue {
     Pending,
-    Done(Option<Resolved>),
+    Done(Resolved),
+    /// No answer at this instant; eligible for a new lookup after the TTL.
+    Missed(Instant),
+}
+
+fn completed(name: Option<Resolved>) -> CacheValue {
+    match name {
+        Some(name) => CacheValue::Done(name),
+        None => CacheValue::Missed(Instant::now()),
+    }
 }
 
 /// Background reverse-DNS cache. Unspecified addresses are never queued.
 pub struct Resolver {
     cache: Arc<Mutex<HashMap<IpAddr, CacheValue>>>,
     cache_max: usize,
+    negative_ttl: Duration,
+    fallback: Arc<AtomicU8>,
     tx: Option<Sender<IpAddr>>,
     workers: Vec<JoinHandle<()>>,
 }
@@ -40,9 +58,9 @@ fn cache_lock(
 
 fn evict_completed(cache: &mut HashMap<IpAddr, CacheValue>, cache_max: usize) {
     while cache.len() >= cache_max {
-        let victim = cache
-            .iter()
-            .find_map(|(ip, value)| matches!(value, CacheValue::Done(_)).then_some(*ip));
+        let victim = cache.iter().find_map(|(ip, value)| {
+            matches!(value, CacheValue::Done(_) | CacheValue::Missed(_)).then_some(*ip)
+        });
         match victim {
             Some(ip) => {
                 cache.remove(&ip);
@@ -66,7 +84,25 @@ fn store_entry(
 
 impl Resolver {
     pub fn new() -> Self {
-        Self::with_lookup(WORKER_COUNT, QUEUE_CAPACITY, lookup_ip)
+        let fallback = Arc::new(AtomicU8::new(Fallback::Off as u8));
+        let setting = Arc::clone(&fallback);
+        let mut resolver = Self::with_lookup(WORKER_COUNT, QUEUE_CAPACITY, move |ip| {
+            lookup_with_fallbacks(ip, Fallback::from_u8(setting.load(Ordering::Relaxed)))
+        });
+        resolver.fallback = fallback;
+        resolver
+    }
+
+    pub fn fallback(&self) -> Fallback {
+        Fallback::from_u8(self.fallback.load(Ordering::Relaxed))
+    }
+
+    /// Choose the public fallback resolver. Changing it drops cached misses
+    /// so those peers are retried with the new chain.
+    pub fn set_fallback(&self, fallback: Fallback) {
+        if self.fallback.swap(fallback as u8, Ordering::Relaxed) != fallback as u8 {
+            cache_lock(&self.cache).retain(|_, v| !matches!(v, CacheValue::Missed(_)));
+        }
     }
 
     fn with_lookup<F>(worker_count: usize, capacity: usize, lookup: F) -> Self
@@ -95,7 +131,7 @@ impl Resolver {
                     while let Ok(ip) = rx.recv() {
                         let name = lookup(ip);
                         let mut cache = cache_lock(&cache);
-                        store_entry(&mut cache, cache_max, ip, CacheValue::Done(name));
+                        store_entry(&mut cache, cache_max, ip, completed(name));
                     }
                 }) {
                 Ok(worker) => workers.push(worker),
@@ -107,6 +143,8 @@ impl Resolver {
         Self {
             cache,
             cache_max,
+            negative_ttl: NEGATIVE_TTL,
+            fallback: Arc::new(AtomicU8::new(Fallback::Off as u8)),
             tx: Some(tx),
             workers,
         }
@@ -117,8 +155,10 @@ impl Resolver {
             return;
         }
         let mut cache = cache_lock(&self.cache);
-        if cache.contains_key(&ip) {
-            return;
+        match cache.get(&ip) {
+            Some(CacheValue::Missed(at)) if at.elapsed() >= self.negative_ttl => {}
+            Some(_) => return,
+            None => {}
         }
         // Keep the cache lock across enqueue + pending insertion so an instant
         // lookup cannot publish its result before pending overwrites it.
@@ -129,7 +169,7 @@ impl Resolver {
 
     pub fn get(&self, ip: IpAddr) -> Option<Resolved> {
         match cache_lock(&self.cache).get(&ip) {
-            Some(CacheValue::Done(name)) => name.clone(),
+            Some(CacheValue::Done(name)) => Some(name.clone()),
             _ => None,
         }
     }
@@ -142,7 +182,7 @@ impl Resolver {
     #[cfg(test)]
     pub fn insert_test(&self, ip: IpAddr, name: Option<Resolved>) {
         let mut cache = cache_lock(&self.cache);
-        store_entry(&mut cache, self.cache_max, ip, CacheValue::Done(name));
+        store_entry(&mut cache, self.cache_max, ip, completed(name));
     }
 
     #[cfg(test)]
@@ -174,6 +214,28 @@ impl Default for Resolver {
     }
 }
 
+/// GUI lookup chain. The system resolver (hosts file, router/ISP DNS,
+/// mDNSResponder) answers first. Without an answer, a LAN peer gets one
+/// mDNS query on the local link, and a globally routable peer goes to the
+/// user-selected public resolver if one is enabled. Every answer must pass
+/// `is_plain_hostname`; loopback, documentation, CGNAT and other special
+/// addresses are never sent past the system resolver.
+pub fn lookup_with_fallbacks(ip: IpAddr, fallback: Fallback) -> Option<Resolved> {
+    if ip.is_unspecified() {
+        return None;
+    }
+    let host = reverse_dns(ip).or_else(|| {
+        match ptr::scope(ip) {
+            Scope::Lan => ptr::mdns_ptr(ip),
+            Scope::Global => fallback.server().and_then(|s| ptr::unicast_ptr(ip, s)),
+            Scope::Other => None,
+        }
+        .filter(|h| is_plain_hostname(h))
+    })?;
+    Some(Resolved { host })
+}
+
+/// System resolver only (CLI). No mDNS or public fallback queries.
 pub fn lookup_ip(ip: IpAddr) -> Option<Resolved> {
     if ip.is_unspecified() {
         return None;
@@ -215,7 +277,7 @@ fn reverse_dns(ip: IpAddr) -> Option<String> {
 /// ASCII LDH-style name (underscores tolerated) of at most 253 bytes whose
 /// last label is not numeric, so an answer cannot carry spaces, controls,
 /// bidi marks, a fake "(ip)" suffix, or look like a different IP address.
-fn is_plain_hostname(s: &str) -> bool {
+pub(crate) fn is_plain_hostname(s: &str) -> bool {
     let name = s.strip_suffix('.').unwrap_or(s);
     if name.is_empty() || name.len() > 253 || name.parse::<IpAddr>().is_ok() {
         return false;
@@ -344,6 +406,39 @@ mod tests {
     }
 
     #[test]
+    fn misses_expire_and_fallback_changes_retry_them() {
+        let (started_tx, started_rx) = bounded(4);
+        let mut resolver = Resolver::with_lookup(1, 4, move |ip| {
+            started_tx.send(ip).unwrap();
+            None
+        });
+        let ip = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 9));
+        let missed = |r: &Resolver| {
+            let deadline = Instant::now() + TIMEOUT;
+            while !matches!(cache_lock(&r.cache).get(&ip), Some(CacheValue::Missed(_))) {
+                assert!(Instant::now() < deadline, "miss never recorded");
+                thread::sleep(Duration::from_millis(5));
+            }
+        };
+        resolver.request(ip);
+        assert_eq!(started_rx.recv_timeout(TIMEOUT).unwrap(), ip);
+        missed(&resolver);
+        resolver.request(ip); // Within the TTL: no new lookup.
+        assert!(started_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        resolver.set_fallback(Fallback::Quad9); // New chain: misses retried.
+        assert!(!resolver.contains(ip));
+        resolver.request(ip);
+        assert_eq!(started_rx.recv_timeout(TIMEOUT).unwrap(), ip);
+        missed(&resolver);
+        resolver.set_fallback(Fallback::Quad9); // Unchanged: miss kept.
+        assert!(resolver.contains(ip));
+        resolver.negative_ttl = Duration::ZERO; // Expired: retried.
+        resolver.request(ip);
+        assert_eq!(started_rx.recv_timeout(TIMEOUT).unwrap(), ip);
+        assert_eq!(resolver.fallback(), Fallback::Quad9);
+    }
+
+    #[test]
     fn idle_shutdown_and_no_workers_do_not_leave_pending_requests() {
         drop(Resolver::with_lookup(2, 1, |_| panic!("no work expected")));
         let resolver = Resolver::with_lookup(0, 1, |_| panic!("no worker expected"));
@@ -428,21 +523,21 @@ mod tests {
         assert_eq!(cache.len(), 3);
         assert_eq!(
             cache.get(&first),
-            Some(&CacheValue::Done(Some(Resolved {
+            Some(&CacheValue::Done(Resolved {
                 host: "one.test".into(),
-            })))
+            }))
         );
         assert_eq!(
             cache.get(&second),
-            Some(&CacheValue::Done(Some(Resolved {
+            Some(&CacheValue::Done(Resolved {
                 host: "two.test".into(),
-            })))
+            }))
         );
         assert_eq!(
             cache.get(&third),
-            Some(&CacheValue::Done(Some(Resolved {
+            Some(&CacheValue::Done(Resolved {
                 host: "fresh.test".into(),
-            })))
+            }))
         );
     }
 
@@ -495,9 +590,9 @@ mod tests {
         assert_eq!(cache.len(), MAX);
         assert_eq!(
             cache.get(&extra),
-            Some(&CacheValue::Done(Some(Resolved {
+            Some(&CacheValue::Done(Resolved {
                 host: "fresh.test".into(),
-            })))
+            }))
         );
     }
 
@@ -549,9 +644,9 @@ mod tests {
         drop(resolver);
         assert_eq!(
             cache_lock(&cache).get(&pending_ip),
-            Some(&CacheValue::Done(Some(Resolved {
+            Some(&CacheValue::Done(Resolved {
                 host: "late.test".into(),
-            })))
+            }))
         );
     }
 

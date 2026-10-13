@@ -11,6 +11,7 @@ pub mod diff;
 pub mod dns;
 pub mod export;
 pub mod kill;
+pub mod ptr;
 pub mod snapshot;
 
 pub use diff::{diff, Highlight, Row};
