@@ -15,6 +15,11 @@ use crate::snapshot::{
 };
 
 pub const APP_TITLE: &str = "CyClaw-Net-Viewer";
+const RATES_MS: [u64; 4] = [500, 1000, 2000, 5000];
+
+fn filter_id() -> egui::Id {
+    egui::Id::new("netboard-filter")
+}
 
 fn clipboard_tsv(fields: &[&str]) -> String {
     fields
@@ -127,6 +132,8 @@ pub struct NetBoardApp {
     pending_kill: Option<(u32, String)>,
     last_save: Option<String>,
     interval_choice: u64,
+    /// Set by `/` or Cmd+F; the filter box takes focus on the next draw.
+    focus_filter: bool,
 }
 
 impl NetBoardApp {
@@ -164,6 +171,7 @@ impl NetBoardApp {
             pending_kill: None,
             last_save: None,
             interval_choice: 1000,
+            focus_filter: false,
         }
     }
 }
@@ -261,66 +269,55 @@ impl eframe::App for NetBoardApp {
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| {
             self.menu(ui, &visible);
-            ui.horizontal(|ui| {
-                if ui
-                    .selectable_label(paused, if paused { "Paused" } else { "Pause" })
-                    .clicked()
-                {
-                    self.shared.paused.store(!paused, Ordering::Relaxed);
-                }
-                if ui.button("Refresh").clicked() {
-                    self.shared.kick.store(true, Ordering::Relaxed);
-                }
-                ui.checkbox(&mut self.resolve_names, "Resolve names");
-                ui.checkbox(&mut self.color_offbox, "Color remotes");
-                ui.checkbox(&mut self.offbox_only, "Off-box only");
-                ui.label("Rate");
-                egui::ComboBox::from_id_salt("rate")
-                    .selected_text(rate_label(self.interval_choice))
-                    .show_ui(ui, |ui| {
-                        for ms in [500u64, 1000, 2000, 5000] {
-                            if ui
-                                .selectable_label(self.interval_choice == ms, rate_label(ms))
-                                .clicked()
-                            {
-                                self.interval_choice = ms;
-                                self.shared.interval_ms.store(ms, Ordering::Relaxed);
-                            }
-                        }
-                    });
-                ui.add(
-                    TextEdit::singleline(&mut self.filter)
-                        .hint_text("Filter process, PID, host, port…")
-                        .desired_width(240.0),
-                );
-            });
+            ui.add_space(2.0);
+            ui.horizontal(|ui| self.toolbar(ui, paused));
+            ui.add_space(4.0);
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 let off = visible
                     .iter()
                     .filter(|r| is_offbox(r.endpoint.key.remote))
                     .count();
-                ui.label(format!("{} endpoints · {} off-box", visible.len(), off));
+                ui.label(
+                    RichText::new(format!("{} endpoints · {} off-box", visible.len(), off))
+                        .strong(),
+                );
+                let hidden = rows.len() - visible.len();
+                if hidden > 0 {
+                    ui.weak(format!("({hidden} hidden by filter/options)"));
+                }
                 if paused {
-                    ui.label("paused");
+                    let amber = HighlightPalette::for_mode(ui.visuals().dark_mode).changed;
+                    ui.label(
+                        RichText::new(" PAUSED ")
+                            .background_color(amber.0)
+                            .color(amber.1),
+                    )
+                    .on_hover_text("Snapshots are paused. Space or Resume continues.");
                 }
                 ui.separator();
                 legend(ui, ui.visuals().dark_mode);
                 if let Some(e) = &err {
                     ui.separator();
-                    ui.colored_label(Color32::RED, e);
+                    ui.colored_label(ui.visuals().error_fg_color, e);
                 }
                 if let Some(s) = &self.last_save {
                     ui.separator();
-                    ui.label(s);
+                    ui.add(egui::Label::new(s.as_str()).truncate());
                 }
             });
+            ui.add_space(2.0);
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.table(ui, &visible);
+            if visible.is_empty() {
+                self.empty_state(ui, rows.is_empty() && err.is_none());
+            } else {
+                self.table(ui, &visible);
+            }
         });
 
         self.modals(ctx);
@@ -343,11 +340,17 @@ impl NetBoardApp {
         let mut refresh = false;
         let mut names = false;
         let mut kill = false;
+        let mut find = false;
+        let mut slash = false;
+        let mut escape = false;
         ctx.input(|i| {
-            // Leave Cmd/Ctrl/Alt chords to the system and menus.
+            find = i.modifiers.command && i.key_pressed(Key::F);
+            escape = i.key_pressed(Key::Escape);
+            // Leave other Cmd/Ctrl/Alt chords to the system and menus.
             if i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt {
                 return;
             }
+            slash = i.key_pressed(Key::Slash);
             if i.key_pressed(Key::Space) {
                 pause = true;
             }
@@ -361,12 +364,25 @@ impl NetBoardApp {
                 kill = true;
             }
         });
+        let filter_has_focus = ctx.memory(|m| m.has_focus(filter_id()));
+        if escape && filter_has_focus && self.pending_kill.is_none() {
+            // Esc in the filter clears it and hands the keyboard back.
+            self.filter.clear();
+            ctx.memory_mut(|m| m.surrender_focus(filter_id()));
+            return;
+        }
+        if find && self.pending_kill.is_none() {
+            self.focus_filter = true;
+        }
         // Any focused widget owns the keyboard: typing in the filter, or
         // Space/Enter on a Tab-focused button (egui treats that as a click,
         // so a global Space would toggle Pause twice). The confirmation
         // dialog also suspends shortcuts until it is answered.
         if ctx.wants_keyboard_input() || self.pending_kill.is_some() {
             return;
+        }
+        if slash {
+            self.focus_filter = true;
         }
         if pause {
             let p = self.shared.paused.load(Ordering::Relaxed);
@@ -383,10 +399,109 @@ impl NetBoardApp {
         }
     }
 
+    fn toolbar(&mut self, ui: &mut egui::Ui, paused: bool) {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (label, tip) = if paused {
+            ("▶ Resume", "Resume live snapshots (Space)")
+        } else {
+            ("⏸ Pause", "Freeze the table to inspect rows (Space)")
+        };
+        if ui
+            .selectable_label(paused, label)
+            .on_hover_text(tip)
+            .clicked()
+        {
+            self.shared.paused.store(!paused, Ordering::Relaxed);
+        }
+        if ui
+            .button("⟳ Refresh")
+            .on_hover_text("Take a snapshot now (R)")
+            .clicked()
+        {
+            self.shared.kick.store(true, Ordering::Relaxed);
+        }
+        ui.label("Rate").on_hover_text("Snapshot interval");
+        egui::ComboBox::from_id_salt("rate")
+            .width(56.0)
+            .selected_text(rate_label(self.interval_choice))
+            .show_ui(ui, |ui| self.rate_choices(ui));
+        ui.separator();
+        ui.checkbox(&mut self.resolve_names, "Resolve names").on_hover_text(
+            "Reverse-DNS remote IPs (N). Sends PTR queries; names are untrusted labels and the IP stays visible.",
+        );
+        ui.checkbox(&mut self.color_offbox, "Color remotes")
+            .on_hover_text("Orange fill for stable endpoints whose peer is off this Mac");
+        ui.checkbox(&mut self.offbox_only, "Off-box only")
+            .on_hover_text(
+                "Hide listeners, loopback and wildcard peers; show only traffic leaving this Mac",
+            );
+        ui.separator();
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if !self.filter.is_empty()
+                && ui
+                    .small_button("✕")
+                    .on_hover_text("Clear filter (Esc)")
+                    .clicked()
+            {
+                self.filter.clear();
+            }
+            let filter = ui.add(
+                TextEdit::singleline(&mut self.filter)
+                    .id(filter_id())
+                    .hint_text("Filter process, PID, host, port…  ( / )")
+                    .desired_width(ui.available_width().clamp(160.0, 320.0)),
+            );
+            if std::mem::take(&mut self.focus_filter) {
+                filter.request_focus();
+            }
+        });
+    }
+
+    fn rate_choices(&mut self, ui: &mut egui::Ui) {
+        for ms in RATES_MS {
+            if ui
+                .selectable_label(self.interval_choice == ms, rate_label(ms))
+                .clicked()
+            {
+                self.interval_choice = ms;
+                self.shared.interval_ms.store(ms, Ordering::Relaxed);
+            }
+        }
+    }
+
+    fn empty_state(&mut self, ui: &mut egui::Ui, waiting: bool) {
+        ui.vertical_centered(|ui| {
+            ui.add_space(ui.available_height() * 0.35);
+            if waiting {
+                ui.spinner();
+                ui.label("Waiting for the first snapshot…");
+                ui.weak("libproc walks every PID once; this can take a moment.");
+                return;
+            }
+            ui.heading("No endpoints match");
+            ui.weak("The filter or the Options menu is hiding every row.");
+            ui.add_space(6.0);
+            if !self.filter.is_empty() && ui.button("Clear filter").clicked() {
+                self.filter.clear();
+            }
+            if (self.offbox_only || !self.show_udp || !self.show_listen)
+                && ui.button("Show all endpoints").clicked()
+            {
+                self.offbox_only = false;
+                self.show_udp = true;
+                self.show_listen = true;
+            }
+        });
+    }
+
     fn menu(&mut self, ui: &mut egui::Ui, visible: &[&Row]) {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
-                if ui.button("Save CSV").clicked() {
+                if ui
+                    .button("Save CSV")
+                    .on_hover_text("Visible rows to ~/Downloads, private (0600)")
+                    .clicked()
+                {
                     self.save_csv(visible);
                     ui.close_menu();
                 }
@@ -409,15 +524,7 @@ impl NetBoardApp {
                 ui.checkbox(&mut self.offbox_only, "Off-box only");
                 ui.separator();
                 ui.label("Refresh rate");
-                for ms in [500u64, 1000, 2000, 5000] {
-                    if ui
-                        .selectable_label(self.interval_choice == ms, rate_label(ms))
-                        .clicked()
-                    {
-                        self.interval_choice = ms;
-                        self.shared.interval_ms.store(ms, Ordering::Relaxed);
-                    }
-                }
+                self.rate_choices(ui);
             });
             ui.menu_button("Help", |ui| {
                 if ui.button("About").clicked() {
@@ -438,7 +545,7 @@ impl NetBoardApp {
         let mut reveal: Option<String> = None;
         let mut new_sort = None;
 
-        let mut header = |ui: &mut egui::Ui, col: SortCol, label: &str| {
+        let mut header = |ui: &mut egui::Ui, col: SortCol, label: &str, tip: &str| {
             let mark = if self.sort == col {
                 if self.sort_asc {
                     " ▾"
@@ -448,7 +555,12 @@ impl NetBoardApp {
             } else {
                 ""
             };
-            if ui.button(format!("{label}{mark}")).clicked() {
+            let text = RichText::new(format!("{label}{mark}")).strong();
+            if ui
+                .add(egui::Button::new(text).frame(false))
+                .on_hover_text(tip)
+                .clicked()
+            {
                 new_sort = Some(col);
             }
         };
@@ -456,6 +568,7 @@ impl NetBoardApp {
         TableBuilder::new(ui)
             .striped(true)
             .resizable(true)
+            .auto_shrink([false, false])
             .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
             .min_scrolled_height(120.0)
             .sense(Sense::click())
@@ -468,14 +581,28 @@ impl NetBoardApp {
             .column(Column::initial(110.0))
             .column(Column::remainder())
             .header(24.0, |mut row| {
-                row.col(|ui| header(ui, SortCol::Process, "Process"));
-                row.col(|ui| header(ui, SortCol::Pid, "PID"));
-                row.col(|ui| header(ui, SortCol::Proto, "Proto"));
-                row.col(|ui| header(ui, SortCol::Dir, "Dir"));
-                row.col(|ui| header(ui, SortCol::Local, "Local"));
-                row.col(|ui| header(ui, SortCol::Remote, "Remote"));
-                row.col(|ui| header(ui, SortCol::State, "State"));
-                row.col(|ui| header(ui, SortCol::Path, "Path"));
+                row.col(|ui| header(ui, SortCol::Process, "Process", "Owning process name"));
+                row.col(|ui| header(ui, SortCol::Pid, "PID", "Process ID"));
+                row.col(|ui| header(ui, SortCol::Proto, "Proto", "TCP/UDP and IP version"));
+                row.col(|ui| {
+                    header(
+                        ui,
+                        SortCol::Dir,
+                        "Dir",
+                        "Out = this Mac connected; In = accepted on a listening port",
+                    )
+                });
+                row.col(|ui| header(ui, SortCol::Local, "Local", "Local address:port"));
+                row.col(|ui| {
+                    header(
+                        ui,
+                        SortCol::Remote,
+                        "Remote",
+                        "Peer address:port (* = none/wildcard)",
+                    )
+                });
+                row.col(|ui| header(ui, SortCol::State, "State", "TCP state (blank for UDP)"));
+                row.col(|ui| header(ui, SortCol::Path, "Path", "Executable path"));
             })
             .body(|body| {
                 body.rows(22.0, visible.len(), |mut row| {
@@ -516,7 +643,8 @@ impl NetBoardApp {
                             if mono {
                                 t = t.monospace();
                             }
-                            ui.label(t);
+                            // Narrow columns elide with "…"; hover shows the full value.
+                            ui.add(egui::Label::new(t).truncate());
                         });
                     }
                     let resp = row.response();
@@ -636,22 +764,27 @@ impl NetBoardApp {
     }
 
     fn sort_rows(&self, rows: &mut [&Row]) {
+        fn fold(s: &str) -> impl Iterator<Item = u8> + '_ {
+            s.bytes().map(|b| b.to_ascii_lowercase())
+        }
         rows.sort_by(|a, b| {
             let ord = match self.sort {
-                SortCol::Process => a.endpoint.process.cmp(&b.endpoint.process),
+                SortCol::Process => fold(&a.endpoint.process).cmp(fold(&b.endpoint.process)),
                 SortCol::Pid => a.endpoint.key.pid.cmp(&b.endpoint.key.pid),
                 SortCol::Proto => a.endpoint.proto_label().cmp(b.endpoint.proto_label()),
                 SortCol::Dir => a.endpoint.dir_label().cmp(b.endpoint.dir_label()),
                 SortCol::Local => a.endpoint.key.local.cmp(&b.endpoint.key.local),
                 SortCol::Remote => a.endpoint.key.remote.cmp(&b.endpoint.key.remote),
                 SortCol::State => a.endpoint.state_label().cmp(b.endpoint.state_label()),
-                SortCol::Path => a.endpoint.path.cmp(&b.endpoint.path),
+                SortCol::Path => fold(&a.endpoint.path).cmp(fold(&b.endpoint.path)),
             };
-            if self.sort_asc {
-                ord
-            } else {
-                ord.reverse()
-            }
+            let ord = if self.sort_asc { ord } else { ord.reverse() };
+            // Snapshot order varies per tick; a full-key tie-break keeps equal
+            // rows from swapping places on every refresh.
+            ord.then_with(|| a.endpoint.key.pid.cmp(&b.endpoint.key.pid))
+                .then_with(|| a.endpoint.proto_label().cmp(b.endpoint.proto_label()))
+                .then_with(|| a.endpoint.key.local.cmp(&b.endpoint.key.local))
+                .then_with(|| a.endpoint.key.remote.cmp(&b.endpoint.key.remote))
         });
     }
 
@@ -702,6 +835,9 @@ impl NetBoardApp {
         if self.show_about {
             egui::Window::new(format!("About {APP_TITLE}"))
                 .collapsible(false)
+                .resizable(false)
+                .default_width(420.0)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .open(&mut self.show_about)
                 .show(ctx, |ui| {
                     ui.label(RichText::new(format!("{APP_TITLE} {}", env!("CARGO_PKG_VERSION"))).strong());
@@ -713,34 +849,39 @@ impl NetBoardApp {
                 });
         }
         if let Some((pid, name)) = self.pending_kill.clone() {
-            let mut open = true;
-            egui::Window::new("Terminate process")
-                .collapsible(false)
-                .open(&mut open)
-                .show(ctx, |ui| {
-                    ui.label(format!(
-                        "Terminate {} (PID {pid})?\nThis ends the process, not just the socket.\nDarwin has no TCPView-style TCB delete.",
-                        sanitize_clipboard_text(&name)
-                    ));
-                    ui.horizontal(|ui| {
-                        if ui.button("Terminate").clicked() {
-                            match kill::terminate_expected(pid, &name) {
-                                Ok(()) => {
-                                    self.last_save = Some(format!(
-                                        "SIGTERM {} ({pid})",
-                                        sanitize_clipboard_text(&name)
-                                    ))
-                                }
-                                Err(e) => self.last_save = Some(e),
-                            }
-                            self.pending_kill = None;
+            let shown = sanitize_clipboard_text(&name);
+            let modal = egui::Modal::new(egui::Id::new("netboard-terminate")).show(ctx, |ui| {
+                ui.set_max_width(380.0);
+                ui.heading("Terminate process?");
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!("{shown}  (PID {pid})"))
+                        .monospace()
+                        .strong(),
+                );
+                ui.add_space(4.0);
+                ui.label("Sends SIGTERM to the whole process, not just this socket.");
+                ui.weak("Darwin has no TCPView-style TCB delete.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let danger = egui::Button::new(
+                        RichText::new("Terminate").color(Color32::WHITE).strong(),
+                    )
+                    .fill(Color32::from_rgb(0xC6, 0x28, 0x28));
+                    if ui.add(danger).clicked() {
+                        match kill::terminate_expected(pid, &name) {
+                            Ok(()) => self.last_save = Some(format!("SIGTERM {shown} ({pid})")),
+                            Err(e) => self.last_save = Some(e),
                         }
-                        if ui.button("Cancel").clicked() {
-                            self.pending_kill = None;
-                        }
-                    });
+                        self.pending_kill = None;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        self.pending_kill = None;
+                    }
+                    ui.weak("Esc cancels");
                 });
-            if !open {
+            });
+            if modal.should_close() {
                 self.pending_kill = None;
             }
         }
@@ -750,16 +891,37 @@ impl NetBoardApp {
 fn legend(ui: &mut egui::Ui, dark: bool) {
     let palette = HighlightPalette::for_mode(dark);
     let items = [
-        ("New out", palette.new_out.0),
-        ("New in", palette.new_in.0),
-        ("Changed", palette.changed.0),
-        ("Gone", palette.deleted.0),
-        ("Off-box", palette.offbox.0),
+        ("New out", palette.new_out.0, "New outgoing endpoint"),
+        (
+            "New in",
+            palette.new_in.0,
+            "New incoming endpoint or new LISTEN",
+        ),
+        (
+            "Changed",
+            palette.changed.0,
+            "Same 4-tuple, TCP state changed",
+        ),
+        (
+            "Gone",
+            palette.deleted.0,
+            "Endpoint closed; shown for two refreshes",
+        ),
+        (
+            "Off-box",
+            palette.offbox.0,
+            "Stable endpoint to a peer off this Mac",
+        ),
     ];
-    for (label, color) in items {
-        let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), Sense::hover());
-        ui.painter().rect_filled(rect, 2.0, color);
-        ui.label(label);
+    for (label, color, tip) in items {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(12.0, 12.0), Sense::hover());
+            ui.painter().rect_filled(rect, 3.0, color);
+            ui.label(label);
+        })
+        .response
+        .on_hover_text(tip);
     }
 }
 
@@ -862,6 +1024,7 @@ mod tests {
             pending_kill: None,
             last_save: None,
             interval_choice: 1000,
+            focus_filter: false,
         };
         let frame = Arc::clone(&lock(&app.shared.rows));
         assert!(Arc::ptr_eq(&initial, &frame));
@@ -930,6 +1093,7 @@ mod tests {
             pending_kill: None,
             last_save: None,
             interval_choice: 1000,
+            focus_filter: false,
         };
         app.enqueue_name_lookups(&rows);
         assert!(!app.resolver.contains("127.0.0.1".parse().unwrap()));
