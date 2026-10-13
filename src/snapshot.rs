@@ -261,6 +261,21 @@ fn unspecified_remote(local: IpAddr) -> SocketAddr {
     }
 }
 
+/// Fresh process name for `pid`, using the same "?" placeholder as snapshots.
+/// Lets termination re-check that a PID still names the confirmed process.
+pub fn process_name(pid: u32) -> String {
+    let name = if pid == 0 {
+        String::new()
+    } else {
+        proc_names(pid).0
+    };
+    if name.is_empty() {
+        "?".into()
+    } else {
+        name
+    }
+}
+
 fn proc_names(pid: u32) -> (String, String) {
     let Ok(pid) = i32::try_from(pid) else {
         return (String::new(), String::new());
@@ -334,9 +349,26 @@ pub fn fmt_addr(addr: SocketAddr, host: Option<&str>) -> String {
     format!("{shown}:{port}")
 }
 
+/// Characters that can forge rows or reorder text in a terminal, table cell,
+/// or pasteboard: Unicode controls plus bidi overrides/isolates/marks and
+/// zero-width joiners. Process names and paths are attacker-chosen.
+fn is_spoofing_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061C}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+}
+
+/// Replace controls and bidi/zero-width formatting characters with spaces.
+/// Used for the pasteboard, GUI cells, and CLI text output.
 pub fn sanitize_clipboard_text(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
+        .map(|c| if is_spoofing_char(c) { ' ' } else { c })
         .collect()
 }
 
@@ -371,6 +403,19 @@ mod tests {
             "a b c d e f"
         );
         assert_eq!(sanitize_clipboard_text("proc\tpid\tTCP4"), "proc pid TCP4");
+        // Bidi overrides/isolates and zero-width characters cannot reorder
+        // or hide text; ordinary RTL letters stay intact.
+        assert_eq!(
+            sanitize_clipboard_text("evil\u{202E}gpj.exe\u{2066}x\u{2069}\u{200B}\u{FEFF}"),
+            "evil gpj.exe x   "
+        );
+        assert_eq!(sanitize_clipboard_text("שלום"), "שלום");
+    }
+
+    #[test]
+    fn process_name_uses_placeholder_for_missing_owner() {
+        assert_eq!(process_name(0), "?");
+        assert_ne!(process_name(std::process::id()), "?");
     }
 
     #[test]

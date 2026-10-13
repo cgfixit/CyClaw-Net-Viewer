@@ -207,8 +207,31 @@ fn reverse_dns(ip: IpAddr) -> Option<String> {
         .ok()?
         .to_str()
         .ok()
-        .filter(|s| !s.is_empty())
+        .filter(|s| is_plain_hostname(s))
         .map(str::to_owned)
+}
+
+/// PTR data is chosen by whoever controls the reverse zone. Accept only an
+/// ASCII LDH-style name (underscores tolerated) of at most 253 bytes whose
+/// last label is not numeric, so an answer cannot carry spaces, controls,
+/// bidi marks, a fake "(ip)" suffix, or look like a different IP address.
+fn is_plain_hostname(s: &str) -> bool {
+    let name = s.strip_suffix('.').unwrap_or(s);
+    if name.is_empty() || name.len() > 253 || name.parse::<IpAddr>().is_ok() {
+        return false;
+    }
+    let labels_ok = name.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    });
+    let last_numeric = name
+        .rsplit('.')
+        .next()
+        .is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()));
+    labels_ok && !last_numeric
 }
 
 #[cfg(test)]
@@ -219,6 +242,39 @@ mod tests {
     use std::time::Duration;
 
     const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn ptr_answers_must_be_plain_hostnames() {
+        for ok in [
+            "example.com",
+            "example.com.",
+            "host-1.example.test",
+            "_dmarc.example.com",
+            "xn--bcher-kva.example",
+            "localhost",
+        ] {
+            assert!(is_plain_hostname(ok), "rejected {ok}");
+        }
+        let long = format!("{}.example", "a".repeat(64));
+        for bad in [
+            "",
+            ".",
+            "8.8.8.8",
+            "2001:db8::1",
+            "1.2.3",
+            "example.com (8.8.8.8)",
+            "evil\u{202E}moc.elgoog",
+            "tab\there",
+            "new\nline",
+            "a..b",
+            "bücher.example",
+            long.as_str(),
+        ] {
+            assert!(!is_plain_hostname(bad), "accepted {bad:?}");
+        }
+        assert!(is_plain_hostname(&"a.".repeat(127))); // 253 bytes + root dot
+        assert!(!is_plain_hostname(&"a.".repeat(128)));
+    }
 
     #[test]
     fn workers_receive_concurrently_and_suppress_pending_duplicates() {

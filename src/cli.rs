@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 
 use crate::dns::{lookup_ip, Resolved};
-use crate::snapshot::{csv_escape, fmt_addr, snapshot, Endpoint, TcpState};
+use crate::snapshot::{
+    csv_escape, fmt_addr, sanitize_clipboard_text, snapshot, Endpoint, TcpState,
+};
 
 pub struct CliArgs {
     pub all: bool,
@@ -119,18 +121,24 @@ fn print_row(e: &Endpoint, csv: bool, name: &mut dyn FnMut(IpAddr) -> Option<Res
             csv_escape(&e.path)
         );
     } else {
-        println!(
-            "{:<18} {:>6} {:<5} {:<6} {:<40} {:<40} {:<13} {}",
-            trunc(&e.process, 18),
-            e.key.pid,
-            e.proto_label(),
-            e.dir_label(),
-            trunc(&local, 40),
-            trunc(&remote, 40),
-            e.state_label(),
-            e.path
-        );
+        println!("{}", text_row(e, &local, &remote));
     }
+}
+
+/// Fixed-width row. A newline or bidi override in an attacker-chosen process
+/// name or path must not forge extra rows or reorder columns in a terminal.
+fn text_row(e: &Endpoint, local: &str, remote: &str) -> String {
+    format!(
+        "{:<18} {:>6} {:<5} {:<6} {:<40} {:<40} {:<13} {}",
+        trunc(&sanitize_clipboard_text(&e.process), 18),
+        e.key.pid,
+        e.proto_label(),
+        e.dir_label(),
+        trunc(local, 40),
+        trunc(remote, 40),
+        e.state_label(),
+        sanitize_clipboard_text(&e.path)
+    )
 }
 
 fn format_endpoints(
@@ -254,6 +262,17 @@ mod tests {
                 assert_eq!(calls, [eps[0].key.local.ip(), eps[0].key.remote.ip()]);
             }
         }
+    }
+
+    #[test]
+    fn text_rows_cannot_be_forged_by_process_names_or_paths() {
+        let mut e = endpoint("127.0.0.1:50000", "192.0.2.1:443");
+        e.process = "evil\nFAKE 1 TCP4".into();
+        e.path = "/tmp/\u{202E}gpj.app\r\n".into();
+        let row = text_row(&e, "127.0.0.1:50000", "192.0.2.1:443");
+        assert!(!row.contains(['\n', '\r', '\u{202E}']), "{row:?}");
+        assert!(row.starts_with("evil FAKE 1 TCP4"));
+        assert!(row.ends_with("/tmp/ gpj.app  "));
     }
 
     #[test]

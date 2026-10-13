@@ -127,7 +127,6 @@ pub struct NetBoardApp {
     pending_kill: Option<(u32, String)>,
     last_save: Option<String>,
     interval_choice: u64,
-    filter_focused: bool,
 }
 
 impl NetBoardApp {
@@ -165,7 +164,6 @@ impl NetBoardApp {
             pending_kill: None,
             last_save: None,
             interval_choice: 1000,
-            filter_focused: false,
         }
     }
 }
@@ -290,12 +288,11 @@ impl eframe::App for NetBoardApp {
                             }
                         }
                     });
-                let filter = ui.add(
+                ui.add(
                     TextEdit::singleline(&mut self.filter)
                         .hint_text("Filter process, PID, host, port…")
                         .desired_width(240.0),
                 );
-                self.filter_focused = filter.has_focus();
             });
         });
 
@@ -347,6 +344,10 @@ impl NetBoardApp {
         let mut names = false;
         let mut kill = false;
         ctx.input(|i| {
+            // Leave Cmd/Ctrl/Alt chords to the system and menus.
+            if i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt {
+                return;
+            }
             if i.key_pressed(Key::Space) {
                 pause = true;
             }
@@ -359,11 +360,12 @@ impl NetBoardApp {
             if i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace) {
                 kill = true;
             }
-            if i.key_pressed(Key::Slash) {
-                // focus handled by clicking filter; slash is documented
-            }
         });
-        if self.filter_focused {
+        // Any focused widget owns the keyboard: typing in the filter, or
+        // Space/Enter on a Tab-focused button (egui treats that as a click,
+        // so a global Space would toggle Pause twice). The confirmation
+        // dialog also suspends shortcuts until it is answered.
+        if ctx.wants_keyboard_input() || self.pending_kill.is_some() {
             return;
         }
         if pause {
@@ -493,15 +495,17 @@ impl NetBoardApp {
                     let local = self.fmt_ep(r.endpoint.key.local);
                     let remote = self.fmt_ep(r.endpoint.key.remote);
                     let pid_s = r.endpoint.key.pid.to_string();
+                    let process = sanitize_clipboard_text(&r.endpoint.process);
+                    let path = sanitize_clipboard_text(&r.endpoint.path);
                     let cells = [
-                        (r.endpoint.process.as_str(), false),
+                        (process.as_str(), false),
                         (pid_s.as_str(), true),
                         (r.endpoint.proto_label(), true),
                         (r.endpoint.dir_label(), false),
                         (local.as_str(), true),
                         (remote.as_str(), true),
                         (r.endpoint.state_label(), true),
-                        (r.endpoint.path.as_str(), false),
+                        (path.as_str(), false),
                     ];
                     for (c, mono) in cells {
                         row.col(|ui| {
@@ -571,11 +575,18 @@ impl NetBoardApp {
             self.pending_kill = Some(k);
         }
         if let Some(p) = reveal {
-            if let Err(e) = std::process::Command::new("open")
+            match std::process::Command::new("open")
                 .args(finder_open_args(&p))
                 .spawn()
             {
-                self.last_save = Some(format!("Reveal failed: {e}"));
+                // Reap `open` off the UI thread so each reveal does not
+                // leave a zombie child until the app exits.
+                Ok(mut child) => {
+                    let _ = thread::Builder::new()
+                        .name("netboard-reveal".into())
+                        .spawn(move || child.wait());
+                }
+                Err(e) => self.last_save = Some(format!("Reveal failed: {e}")),
             }
         }
     }
@@ -663,7 +674,8 @@ impl NetBoardApp {
     }
 
     fn save_csv(&mut self, visible: &[&Row]) {
-        let name = csv_filename();
+        let path = export_dir(std::env::var_os("HOME")).join(csv_filename());
+        let name = path.display().to_string();
         let mut buf = String::from("Process,PID,Proto,Dir,Local,Remote,State,Path\n");
         for r in visible {
             let local = self.fmt_ep(r.endpoint.key.local);
@@ -680,7 +692,7 @@ impl NetBoardApp {
                 crate::csv_escape(&r.endpoint.path)
             ));
         }
-        match crate::export::save_new(std::path::Path::new(&name), &buf) {
+        match crate::export::save_new(&path, &buf) {
             Ok(()) => self.last_save = Some(format!("saved {name}")),
             Err(e) => self.last_save = Some(format!("save failed: {e}")),
         }
@@ -692,7 +704,7 @@ impl NetBoardApp {
                 .collapsible(false)
                 .open(&mut self.show_about)
                 .show(ctx, |ui| {
-                    ui.label(RichText::new(format!("{APP_TITLE} 0.1.0")).strong());
+                    ui.label(RichText::new(format!("{APP_TITLE} {}", env!("CARGO_PKG_VERSION"))).strong());
                     ui.label("Live TCP/UDP endpoints on macOS, for CyClaw telemetry-kill watching.");
                     ui.label("MIT. Not affiliated with Microsoft or Sysinternals.");
                     ui.label("Orange = TCP/UDP to an off-box remote (loopback/* stay uncolored). Event colors override: green new out, blue new in, yellow state change, red gone.");
@@ -707,12 +719,18 @@ impl NetBoardApp {
                 .open(&mut open)
                 .show(ctx, |ui| {
                     ui.label(format!(
-                        "Terminate {name} (PID {pid})?\nThis ends the process, not just the socket.\nDarwin has no TCPView-style TCB delete."
+                        "Terminate {} (PID {pid})?\nThis ends the process, not just the socket.\nDarwin has no TCPView-style TCB delete.",
+                        sanitize_clipboard_text(&name)
                     ));
                     ui.horizontal(|ui| {
                         if ui.button("Terminate").clicked() {
-                            match kill::terminate(pid) {
-                                Ok(()) => self.last_save = Some(format!("SIGTERM {name} ({pid})")),
+                            match kill::terminate_expected(pid, &name) {
+                                Ok(()) => {
+                                    self.last_save = Some(format!(
+                                        "SIGTERM {} ({pid})",
+                                        sanitize_clipboard_text(&name)
+                                    ))
+                                }
                                 Err(e) => self.last_save = Some(e),
                             }
                             self.pending_kill = None;
@@ -752,6 +770,23 @@ fn rate_label(ms: u64) -> &'static str {
         2000 => "2s",
         5000 => "5s",
         _ => "1s",
+    }
+}
+
+/// GUI exports go to ~/Downloads (else ~). A Finder-launched app runs with
+/// the working directory `/`, where an export could never be created.
+fn export_dir(home: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    let Some(home) = home
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.is_absolute())
+    else {
+        return std::path::PathBuf::from(".");
+    };
+    let downloads = home.join("Downloads");
+    if downloads.is_dir() {
+        downloads
+    } else {
+        home
     }
 }
 
@@ -827,7 +862,6 @@ mod tests {
             pending_kill: None,
             last_save: None,
             interval_choice: 1000,
-            filter_focused: false,
         };
         let frame = Arc::clone(&lock(&app.shared.rows));
         assert!(Arc::ptr_eq(&initial, &frame));
@@ -896,7 +930,6 @@ mod tests {
             pending_kill: None,
             last_save: None,
             interval_choice: 1000,
-            filter_focused: false,
         };
         app.enqueue_name_lookups(&rows);
         assert!(!app.resolver.contains("127.0.0.1".parse().unwrap()));
@@ -949,6 +982,30 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn exports_go_to_downloads_then_home_never_relative_home() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let home =
+            std::env::temp_dir().join(format!("netboard-home-{}-{nonce}", std::process::id()));
+        std::fs::create_dir(&home).unwrap();
+        assert_eq!(export_dir(Some(home.clone().into())), home);
+        std::fs::create_dir(home.join("Downloads")).unwrap();
+        assert_eq!(
+            export_dir(Some(home.clone().into())),
+            home.join("Downloads")
+        );
+        std::fs::remove_dir(home.join("Downloads")).unwrap();
+        std::fs::remove_dir(&home).unwrap();
+        assert_eq!(export_dir(None), std::path::PathBuf::from("."));
+        assert_eq!(
+            export_dir(Some("relative/home".into())),
+            std::path::PathBuf::from(".")
+        );
     }
 
     #[test]
