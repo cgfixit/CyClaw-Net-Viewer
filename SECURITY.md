@@ -17,15 +17,23 @@ check run requiring write access.
   consequences of process termination and file exports.
 - Terminate process sends SIGTERM to the whole owning process after
   confirmation. Zero, launchd, self, and out-of-range PIDs are refused.
-  PID reuse between snapshot and confirmation remains a limitation; a PID
-  is not a durable process identity. Avoid terminating stale selections.
+  Immediately before signaling, the PID's current process name is re-read
+  and must equal the confirmed name, otherwise nothing is sent. That narrows
+  but does not close PID reuse (a reused PID with the same short name still
+  matches); a PID is not a durable process identity. Avoid terminating
+  stale selections. Keyboard shortcuts are suspended while the dialog is
+  open.
 - GUI name resolution is off by default. Enabling it can send PTR
   queries through the system resolver. Numeric CLI mode (`-n`) avoids
   lookups; disabling GUI name resolution stops new requests, but queued
-  requests may complete. Cached names are untrusted labels, not verified
-  peer identities. The GUI resolver keeps at most 4096 completed
+  requests may complete. PTR answers are kept only when they are a plain
+  ASCII hostname (letters, digits, `-`, `_`, dots; at most 253 bytes;
+  non-numeric last label), so an answer cannot imitate an IP address or
+  carry spaces, controls, or bidi marks. Cached names are still untrusted
+  labels, not verified peer identities. The GUI resolver keeps at most 4096 completed
   addresses; evicted names may be looked up again.
-- GUI CSV exports are created exclusively with mode 0600, without following
+- GUI CSV exports go to `~/Downloads` (or `~` when that folder is missing)
+  and are created exclusively with mode 0600, without following
   existing symlinks. Existing files are never overwritten. A failed write
   may leave a partial private file and is reported as a save failure.
 - Reveal in Finder uses `open -R -- <path>` so a dash-leading `proc_pidpath`
@@ -35,8 +43,12 @@ check run requiring write access.
   import/re-save behavior varies; import columns as text and do not enable
   formulas or external links in untrusted captures. CLI stdout redirection
   does not inherit the GUI's private-file creation policy.
-- Copy line and Copy remote replace Unicode control characters with spaces
-  before writing the pasteboard. Copy line joins the cleaned fields with tabs.
+- Copy line and Copy remote replace Unicode control characters and bidi or
+  zero-width formatting characters with spaces before writing the
+  pasteboard. Copy line joins the cleaned fields with tabs. GUI cells, the
+  termination dialog, and CLI text rows apply the same cleaning to process
+  names and paths so a hostile name cannot forge rows or reorder columns.
+  CSV output keeps the raw value inside RFC 4180 quoting.
 
 ## Build and distribution
 
