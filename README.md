@@ -6,7 +6,14 @@
 macOS 12+ TCP/UDP endpoint viewer for watching process egress—especially while
 developing [CyClaw](https://github.com/cgfixit/CyClaw).
 
-<img src="https://github.com/cgfixit/CyClaw-Net-Viewer/blob/main/docs/image.jpg">
+![CyClaw-Net-Viewer showing a CyClaw agent's live connections: a telemetry endpoint turning red as it is killed, a new curl check in green, a state change in yellow, and a new debug listener in blue](screenshots/overview-dark.png)
+
+*Watching a CyClaw agent while flipping its telemetry kill switch. The agent's
+connection to `telemetry.vendor.example` goes **red** (gone), a `curl` check
+appears in **green**, a worker drops to `CLOSE_WAIT` in **yellow**, and a new
+debug listener shows up in **blue**. Orange rows are steady traffic leaving the
+Mac. Names come from reverse DNS, and the observed IP and port stay visible.
+Synthetic data, documentation IP ranges only.*
 
 | Process | PID | Proto | Dir | Local | Remote | State | Path |
 | --- | ---: | --- | --- | --- | --- | --- | --- |
@@ -18,7 +25,14 @@ developing [CyClaw](https://github.com/cgfixit/CyClaw).
 
 - Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6. Columns: process, PID, protocol, direction, local and remote addresses, TCP state.
 - Refreshes on a timer (default 1s) with the event colors below.
-- Keeps the observed socket IP and port in every cell. Optional reverse DNS is an untrusted label only; it is off by default in the GUI. CLI `-n` stays numeric.
+- Keeps the observed socket IP and port in every cell. Optional reverse DNS is an untrusted label only; it is off by default in the GUI. Long names are shortened before the IP is. CLI `-n` stays numeric.
+- When your router has no reverse-DNS answer, Resolve names asks LAN devices
+  directly over mDNS. You can also opt in to Quad9 or Cloudflare for public
+  peers (**Options → Fallback DNS**, off by default). See
+  [Name resolution](#name-resolution).
+- Filter (`/` or Cmd+F, Esc clears), sort any column, pause to inspect,
+  export visible rows to `~/Downloads` as a private CSV, and terminate the
+  owning process after a confirmation.
 - Ships a double-click `.app` and a Tcpvcon-style CLI in the same `netboard` binary.
 
 See [Direction](docs/DESIGN.md#direction). Refresh,
@@ -35,6 +49,33 @@ deletion, and address rules: [Design](docs/DESIGN.md).
 | Orange | Stable TCP/UDP to an off-box peer (not loopback, not `*`) |
 
 Turn on **Off-box only** when watching CyClaw telemetry-kill. Event colors still win over orange.
+
+## Screenshots
+
+| | |
+| --- | --- |
+| ![Off-box only view listing just the connections that leave the Mac](screenshots/offbox-only.png) | **Off-box only** hides listeners, loopback, and wildcard sockets, leaving only traffic that leaves the Mac. That's what you watch for a telemetry kill. |
+| ![Light theme filtered to cyclaw](screenshots/filter-light.png) | **Filter** matches process, PID, host, port, state, or path. The status bar counts what the filter hides. Light and dark follow macOS. |
+| ![Terminate confirmation dialog](screenshots/terminate-confirm.png) | **Terminate** always asks first. It sends SIGTERM to the whole process, and only if the PID still belongs to the process you confirmed. |
+
+All screenshots use synthetic endpoints with RFC 5737/3849 documentation addresses.
+
+## Name resolution
+
+**Resolve names** (`N`) is off by default. When on, each address goes through:
+
+1. the macOS resolver (hosts file, router/ISP DNS, Bonjour);
+2. for RFC 1918 or link-local IPv4 peers the router could not name, one
+   mDNS query on the local link. Bonjour/Avahi devices answer for their own
+   address. macOS 15+ may ask for Local Network permission the first time;
+3. for public peers, only if you pick **Quad9** or **Cloudflare** under
+   **Options → Fallback DNS**, a direct PTR query to that resolver over UDP/53.
+   This sends those IPs to the provider in cleartext. Private, loopback, and
+   documentation addresses are never sent.
+
+Answers must look like a plain hostname, or they are dropped. Misses are
+retried after two minutes. Names are untrusted labels, not identities. The
+CLI uses step 1 only, and `-n` skips DNS entirely.
 
 ## CLI
 
@@ -55,6 +96,9 @@ netboard --cli [-a] [-c] [-n] [process|pid]
 
 Download `CyClaw-Net-Viewer.zip` and `CyClaw-Net-Viewer.zip.sha256` from the
 latest [GitHub Release](https://github.com/cgfixit/CyClaw-Net-Viewer/releases/latest).
+Releases are built, verified, and attached by the manual
+[Release workflow](.github/workflows/release.yml); see
+[Cutting a release](CONTRIBUTING.md#cutting-a-release).
 No Rust is required to run a downloaded app. Build from source (below) if
 you prefer not to use a prebuilt binary.
 
