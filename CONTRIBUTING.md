@@ -65,6 +65,22 @@ sending signals. CLI snapshot tests filter an impossible PID to avoid
 printing host process data. Update tool versions and hashes together;
 Dependabot updates action references, but not versions inside shell steps.
 
+## Dependency refresh
+
+Dependabot proposes bumps for direct crates and pinned actions only;
+transitive crates in `Cargo.lock` move only when someone refreshes them.
+Do that with the MSRV-aware resolver so nothing newer than Rust 1.85.0
+allows is selected:
+
+```sh
+CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS=fallback cargo update
+```
+
+A plain `cargo update` ignores `rust-version` and breaks the 1.85.0 CI
+matrix. Keep the exact pins in `Cargo.toml` and the Dependabot ignore list
+as they are, and let the four macOS CI jobs and the Audit workflow judge
+the result.
+
 ## Packaging validation
 
 ```sh
