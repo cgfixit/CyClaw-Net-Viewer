@@ -93,11 +93,13 @@ establish a trusted publisher.
 Releases are manual. On `main`, bump `version` in `Cargo.toml`, refresh
 `Cargo.lock` (`cargo build --locked` fails until it matches), and set
 `CFBundleShortVersionString` in `Info.plist` to the same value. After that
-lands, run **Actions → Release → Run workflow** on `main` with the version
-(no leading `v`). The workflow:
+lands, run **Actions → Release → Run workflow** on `main`. Leave the
+`version` input blank: the workflow releases whatever `Cargo.toml` says. If
+you do fill it in (no leading `v`), it must equal that value exactly. The
+workflow:
 
-1. refuses non-`main` refs and any version that differs from `Cargo.toml`
-   or `Info.plist`;
+1. refuses non-`main` refs, an `Info.plist` version that differs from
+   `Cargo.toml`, and a `version` input that differs from either;
 2. runs `./scripts/check.sh`, builds the universal app with
    `./scripts/make-app.sh`, and verifies `lipo`, `codesign`, the plist,
    and the CLI;
