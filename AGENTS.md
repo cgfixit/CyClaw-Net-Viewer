@@ -36,6 +36,8 @@ for the latter; installing stable alone does not override the pin.
 Keep `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, CI, and build docs
 consistent. Compatibility pins are deliberate; do not run a blanket
 `cargo update` or raise the compiler requirement as incidental cleanup.
+When a lockfile refresh is the task, use the MSRV-aware command in
+`CONTRIBUTING.md` (Dependency refresh).
 
 Run `./scripts/check.sh` on macOS for formatting, Clippy, and all tests.
 For packaging changes also run `./scripts/make-app.sh` and verify the

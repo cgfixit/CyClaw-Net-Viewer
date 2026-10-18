@@ -1,13 +1,14 @@
 name: Release
 
-# Manual only: a maintainer chooses the version and the commit on main.
+# Manual only: a maintainer runs it on main; the version comes from Cargo.toml.
 # Build/verify runs read-only; only the publish job may write a release.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version without the leading v (must match Cargo.toml and Info.plist), e.g. 0.1.2"
-        required: true
+        description: "Optional. Leave blank to release the version in Cargo.toml. If set, must match Cargo.toml and Info.plist exactly, e.g. 0.1.2 (no leading v)"
+        required: false
+        default: ""
         type: string
       draft:
         description: "Create the release as a draft (publish it by hand after review)"
@@ -36,8 +37,10 @@ jobs:
     name: Build and verify universal app
     runs-on: macos-14
     timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     env:
-      VERSION: ${{ inputs.version }}
+      VERSION_INPUT: ${{ inputs.version }}
     steps:
       - name: Require the default branch
         if: github.ref != 'refs/heads/main'
@@ -47,19 +50,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check version input matches Cargo.toml and Info.plist
+      - name: Resolve version from Cargo.toml and check Info.plist
+        id: version
         run: |
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
-            echo "::error::version must look like 1.2.3 or 1.2.3-rc.1 (no leading v)"
-            exit 1
-          fi
           cargo_version="$(awk -F'"' '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version = /{print $2; exit}' Cargo.toml)"
           plist_version="$(plutil -extract CFBundleShortVersionString raw Info.plist)"
-          echo "input=$VERSION Cargo.toml=$cargo_version Info.plist=$plist_version"
-          if [ "$cargo_version" != "$VERSION" ] || [ "$plist_version" != "$VERSION" ]; then
-            echo "::error::Bump Cargo.toml, Cargo.lock and Info.plist to $VERSION on main before releasing."
+          echo "input=${VERSION_INPUT:-<blank>} Cargo.toml=$cargo_version Info.plist=$plist_version"
+          if ! printf '%s' "$cargo_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::Cargo.toml version '$cargo_version' must look like 1.2.3 or 1.2.3-rc.1"
             exit 1
           fi
+          if [ "$plist_version" != "$cargo_version" ]; then
+            echo "::error::Info.plist CFBundleShortVersionString ($plist_version) must match Cargo.toml ($cargo_version)."
+            exit 1
+          fi
+          if [ -n "$VERSION_INPUT" ] && [ "$VERSION_INPUT" != "$cargo_version" ]; then
+            echo "::error::version input '$VERSION_INPUT' does not match Cargo.toml ($cargo_version). Leave it blank to release $cargo_version, or bump Cargo.toml, Cargo.lock and Info.plist on main first."
+            exit 1
+          fi
+          echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@3230091d7ef9483f601620abacc570c22cf44d22 # 1.85.0
         with:
           toolchain: 1.85.0
@@ -109,7 +118,7 @@ jobs:
     permissions:
       contents: write
     env:
-      VERSION: ${{ inputs.version }}
+      VERSION: ${{ needs.build.outputs.version }}
       DRAFT: ${{ inputs.draft }}
       PRERELEASE: ${{ inputs.prerelease }}
       GH_TOKEN: ${{ github.token }}
