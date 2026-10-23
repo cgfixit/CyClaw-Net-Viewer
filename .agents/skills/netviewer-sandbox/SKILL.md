@@ -15,7 +15,7 @@ sandbox; do not skip it.
 
 **Windows/Linux:** `git diff --check`. If rustc exists, `cargo fmt --all -- --check`.
 That is not a runtime pass. Use this SHA's macOS CI
-(`.github/workflows/ci.yml`: Rust 1.85.0 and stable on macos-14 and
+(`.github/workflows/ci.yml`: Rust 1.85.0 and stable on macos-15 and
 macos-15-intel). Do not remove `compile_error!`, mock the collector, or
 claim GUI interaction.
 

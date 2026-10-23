@@ -23,7 +23,7 @@ macOS CI for compilation and runtime validation.
 ## CI tools and test coverage
 
 CI runs Rust 1.85.0 and current stable formatting, Clippy, tests, and locked
-release builds natively on Apple Silicon (`macos-14`) and Intel
+release builds natively on Apple Silicon (`macos-15`) and Intel
 (`macos-15-intel`). It also validates `Info.plist` and runs weekly.
 The separate Bundle workflow verifies the universal binary and signature.
 
