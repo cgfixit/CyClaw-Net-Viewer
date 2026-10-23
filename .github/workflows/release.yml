@@ -35,7 +35,7 @@ env:
 jobs:
   build:
     name: Build and verify universal app
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
     outputs:
       version: ${{ steps.version.outputs.version }}

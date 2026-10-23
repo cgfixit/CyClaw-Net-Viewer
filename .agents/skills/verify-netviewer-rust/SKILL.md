@@ -19,7 +19,7 @@ override is essential: installing stable alone leaves the repository pin active.
 The full test suite includes the Bash egress observer and real CLI subprocesses.
 
 For a PR, inspect the exact head's CI matrix: pinned and stable compilers on
-both macos-14 (Apple Silicon) and macos-15-intel. Verify all matrix results,
+both macos-15 (Apple Silicon) and macos-15-intel. Verify all matrix results,
 including release builds; a successful Intel compile is not an ARM runtime
 test. If stable Clippy introduces new warnings, prefer MSRV-compatible fixes
 or narrowly explained lint handling over global warning suppression.
