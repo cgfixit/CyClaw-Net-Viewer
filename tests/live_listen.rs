@@ -2,6 +2,29 @@ use std::net::{TcpListener, TcpStream};
 
 use netboard::{snapshot, Proto};
 
+/// Accept a connection the client side already completed. The handshake is
+/// done before connect returns, but the accepted socket can reach the listen
+/// queue a moment later (seen on Intel runners). Poll a nonblocking accept
+/// against a deadline, so a regression cannot hang the test and a slow queue
+/// cannot fail it.
+fn accept_queued(listener: &TcpListener) -> (TcpStream, std::net::SocketAddr) {
+    listener.set_nonblocking(true).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match listener.accept() {
+            Ok(accepted) => return accepted,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "connection never reached the accept queue"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("accept queued connection: {e}"),
+        }
+    }
+}
+
 #[test]
 fn connected_tcp_pair_has_both_established_endpoints_and_directions() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
@@ -9,25 +32,7 @@ fn connected_tcp_pair_has_both_established_endpoints_and_directions() {
     let client = TcpStream::connect_timeout(&server_addr, std::time::Duration::from_secs(5))
         .expect("connect loopback");
     let client_addr = client.local_addr().unwrap();
-    // The handshake completes before connect returns, but the accepted socket
-    // can reach the listen queue a moment later (seen on an Intel runner).
-    // Poll a nonblocking accept against a deadline so a regression cannot hang
-    // the test and a slow queue cannot fail it.
-    listener.set_nonblocking(true).unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let (server, _) = loop {
-        match listener.accept() {
-            Ok(accepted) => break accepted,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "loopback connection never reached the accept queue"
-                );
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
-            Err(e) => panic!("accept queued loopback connection: {e}"),
-        }
-    };
+    let (server, _) = accept_queued(&listener);
     let pid = std::process::id();
     for attempt in 0..20 {
         let endpoints = snapshot().expect("snapshot");
@@ -103,8 +108,7 @@ fn ipv6_loopback_tcp_and_udp_report_native_addresses() {
     let client = TcpStream::connect_timeout(&server_addr, std::time::Duration::from_secs(5))
         .expect("connect IPv6 loopback");
     let client_addr = client.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let (_server, _) = listener.accept().expect("accept queued connection");
+    let (_server, _) = accept_queued(&listener);
     let receiver = std::net::UdpSocket::bind("[::1]:0").expect("bind IPv6 receiver");
     let sender = std::net::UdpSocket::bind("[::1]:0").expect("bind IPv6 sender");
     let receiver_addr = receiver.local_addr().unwrap();
@@ -139,8 +143,7 @@ fn an_ipv6_listener_reports_its_ipv4_client_as_that_ipv4_address() {
     let client = TcpStream::connect_timeout(&target, std::time::Duration::from_secs(5))
         .expect("connect over IPv4 to the IPv6 listener");
     let client_addr = client.local_addr().unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let (_server, _) = listener.accept().expect("accept queued connection");
+    let (_server, _) = accept_queued(&listener);
     let pid = std::process::id();
     eventually("accepted IPv4-on-IPv6 socket missing or misread", |eps| {
         eps.iter().any(|e| {
