@@ -9,12 +9,25 @@ fn connected_tcp_pair_has_both_established_endpoints_and_directions() {
     let client = TcpStream::connect_timeout(&server_addr, std::time::Duration::from_secs(5))
         .expect("connect loopback");
     let client_addr = client.local_addr().unwrap();
-    // A connected client is sufficient: the established server socket is in the
-    // accept queue. Accept nonblocking so a regression cannot hang the test.
+    // The handshake completes before connect returns, but the accepted socket
+    // can reach the listen queue a moment later (seen on an Intel runner).
+    // Poll a nonblocking accept against a deadline so a regression cannot hang
+    // the test and a slow queue cannot fail it.
     listener.set_nonblocking(true).unwrap();
-    let (server, _) = listener
-        .accept()
-        .expect("accept queued loopback connection");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (server, _) = loop {
+        match listener.accept() {
+            Ok(accepted) => break accepted,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "loopback connection never reached the accept queue"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("accept queued loopback connection: {e}"),
+        }
+    };
     let pid = std::process::id();
     for attempt in 0..20 {
         let endpoints = snapshot().expect("snapshot");
