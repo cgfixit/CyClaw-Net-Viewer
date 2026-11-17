@@ -39,6 +39,25 @@ check run requiring write access.
   Misses are retried after two minutes. Cached names are still untrusted
   labels, not verified peer identities. The GUI resolver keeps at most 4096 completed
   addresses; evicted names may be looked up again.
+- Watch mode (`--watch`) only observes. It never resolves a name, opens no
+  socket of its own, and writes to stdout alone. Its stream holds process
+  names, executable paths, PIDs and peer addresses: redirect it under
+  `umask 077`, because stdout does not get the GUI's private-file policy.
+  Names and paths are attacker-chosen and are declared in the `start`
+  record's `untrusted_fields`; JSON strings escape controls, bidi and
+  zero-width characters so a hostile name cannot forge a record or reorder
+  a terminal line, but the text itself is unchanged for a parser. Do not
+  hand a capture to a language model as trusted input. A watch is a series
+  of samples: sockets shorter than the gap between two samples are not
+  seen, a failed sample observes nothing, and an empty stream does not
+  establish that nothing was sent. Exit 0 means every sample succeeded,
+  not that the watched processes were quiet.
+- `--tree PID` follows observed parentage, keyed on PID plus kernel start
+  time. It is not containment: a process whose parent exits before a scan
+  sees both, or that runs as another user, is not followed. A root that
+  cannot be identified is refused (exit 2) instead of printing nothing.
+  SIGINT and SIGTERM end a watch after its `end` record; the handler only
+  sets a flag.
 - GUI CSV exports go to `~/Downloads` (or `~` when that folder is missing)
   and are created exclusively with mode 0600, without following
   existing symlinks. Existing files are never overwritten. A failed write

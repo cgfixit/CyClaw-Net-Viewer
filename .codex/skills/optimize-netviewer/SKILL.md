@@ -62,6 +62,8 @@ Use this map to choose a bounded path through the repository:
 | `src/app.rs` | Refresh ownership, lock duration, frame-stable rows, filtering/sorting, selection, repaint/pause, event-color precedence, CSV and termination flows. Measure allocations or work at representative synthetic row counts; do not trade stable snapshots for a cosmetic speedup. |
 | `src/dns.rs` | Queue capacity, receive contention, duplicate and negative caching, overload retry, worker lifetime/shutdown, PTR versus forward A lookup, Darwin sockaddr family/length/byte order. Keep DNS outside UI/publication locks. |
 | `src/cli.rs`, `src/main.rs` | GUI/CLI dispatch, numeric `-n` avoiding DNS, all-endpoint `-a`, filters, labels and CSV consistency. |
+| `src/watch.rs`, `tests/watch.rs` | JSON Lines schema version and field order, one `closed` per endpoint, baseline before changes, fixed cadence and skipped slots, failed samples changing no state, `end` record on signal, exit status. No DNS path. Script `watch::Source`; do not add sleeps to unit tests. |
+| `src/procinfo.rs`, `src/proctree.rs` | PID plus start time as identity, same-user limit of `PROC_PIDTBSDINFO`, buffer sizing for the PID list, membership only through observed parentage, sticky members, deterministic change order. Do not order processes by start time. |
 | `src/export.rs`, `src/kill.rs` | Exclusive owner-only file creation, symlink/collision refusal, formula mitigation, positive PID checks and explicit process-termination confirmation. Test validators without signaling real processes. |
 | Build/docs | Deliberate compatibility pins, locked dependencies, macOS CI, universal bundles, ad-hoc signatures, accurate Markdown and tracked documentation assets. Keep PDF regeneration separate unless requested. |
 

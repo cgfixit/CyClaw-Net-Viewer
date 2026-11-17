@@ -19,11 +19,15 @@ open PRs for overlapping work first and use `.github/PULL_REQUEST_TEMPLATE.md`.
 - `src/main.rs`, `src/cli.rs`: GUI/CLI dispatch and snapshot output.
 - `src/snapshot.rs`: Darwin socket enumeration, process metadata, formatting.
 - `src/diff.rs`: endpoint identity and highlight lifecycle.
+- `src/watch.rs`: headless `--watch` loop, JSON Lines records, signal stop.
+- `src/procinfo.rs`, `src/proctree.rs`: libproc process identity (PID plus
+  start time) and the pure `--tree` membership logic.
 - `src/dns.rs`: background PTR resolution, cache, and GUI lookup chain.
 - `src/ptr.rs`: LAN mDNS and opt-in public-resolver PTR fallbacks (wire format).
 - `src/app.rs`: egui table, controls, export, termination confirmation.
 - `src/kill.rs`, `src/export.rs`: process signaling and exclusive CSV writes.
-- `tests/`: diff regression cases and a live loopback listener test.
+- `tests/`: diff regression cases, live loopback listener and Bash egress
+  tests, and `tests/watch.rs` for watch mode and `--tree`.
 - `scripts/`: macOS validation and bundle generation.
 - `tools/`: optional Python PDF generators, not application dependencies.
 
@@ -76,6 +80,11 @@ and use the macOS CI results, never remove the platform guard to fake a pass.
   Do not add analytics, remote reporting, or a required network service.
 - Preserve the existing endpoint key, two-tick deletion lifecycle, and
   event-color precedence unless the task calls for a behavior change.
+- Watch mode observes only: no DNS, no socket of its own, stdout only, no
+  automatic termination. Bump `watch::SCHEMA` when a record gains or loses
+  a field or a field changes meaning, and update `docs/DESIGN.md` with it.
+  Process names and paths in records stay marked untrusted. Do not describe
+  a watch as proof that nothing was sent: it samples.
 - Keep FFI changes small, document pointer/length assumptions, and validate
   on macOS. Do not introduce shell interpolation for process metadata.
 - Keep GitHub Actions permissions read-only, checkout credentials disabled,

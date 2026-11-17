@@ -1,0 +1,1210 @@
+//! Headless watch: sample sockets on an interval and write JSON Lines events.
+//!
+//! Events are differences between consecutive samples. A socket that opens
+//! and closes between two samples is never reported, so the stream can show
+//! that something happened but cannot show that nothing did. The closing
+//! record states the longest gap between samples for that reason.
+//!
+//! Watch output is always numeric: this module has no name-resolution path.
+
+use std::collections::HashMap;
+use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use crate::cli::Filter;
+use crate::procinfo::{self, ProcIdentity, ProcStart};
+use crate::proctree::{Change, Tracker};
+use crate::snapshot::{
+    is_offbox, is_spoofing_char, numeric_ip, process_names, snapshot, Dir, Endpoint, EndpointKey,
+    IpVer, Proto, TcpState,
+};
+
+/// Bumped when a record gains, loses or changes the meaning of a field.
+pub const SCHEMA: &str = "netboard.watch/1";
+pub const DEFAULT_INTERVAL_MS: u64 = 1000;
+pub const MIN_INTERVAL_MS: u64 = 50;
+pub const MAX_INTERVAL_MS: u64 = 60_000;
+pub const MAX_DURATION_S: u64 = 86_400;
+pub const MAX_ROOTS: usize = 16;
+
+pub struct Config {
+    pub interval: Duration,
+    pub duration: Option<Duration>,
+    /// Empty means every process; otherwise these and their descendants.
+    pub roots: Vec<ProcIdentity>,
+    pub filter: Option<Filter>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EndReason {
+    Duration,
+    Interrupted,
+    ScopeExited,
+}
+
+impl EndReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            EndReason::Duration => "duration",
+            EndReason::Interrupted => "interrupted",
+            EndReason::ScopeExited => "scope_exited",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Summary {
+    pub reason: EndReason,
+    /// Samples that succeeded.
+    pub samples: u64,
+    /// Samples that failed. Nothing was observed for those intervals.
+    pub failed: u64,
+}
+
+/// Everything the loop takes from the machine, so tests can script it.
+pub trait Source {
+    fn endpoints(&mut self) -> Result<Vec<Endpoint>, String>;
+    fn processes(&mut self) -> Result<Vec<ProcIdentity>, String>;
+    fn identity(&mut self, pid: u32) -> Option<ProcIdentity>;
+    /// Current process name and executable path.
+    fn names(&mut self, pid: u32) -> (String, String);
+    fn wall(&mut self) -> SystemTime;
+    /// Monotonic time since the source was created.
+    fn elapsed(&mut self) -> Duration;
+    /// Wait this long. `false` means a stop was requested.
+    fn wait(&mut self, time: Duration) -> bool;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Kind {
+    Existing,
+    New,
+    Changed(Option<TcpState>),
+    Closed,
+}
+
+type Key = (EndpointKey, Option<ProcStart>);
+
+/// Run until the duration ends, a stop is requested, or the watched tree
+/// has exited. A write error ends the watch and is returned to the caller.
+pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::Result<Summary> {
+    let began = src.elapsed();
+    writeln!(out, "{}", start_line(cfg, &timestamp(src.wall())))?;
+    out.flush()?;
+
+    let mut tracker = (!cfg.roots.is_empty()).then(|| Tracker::new(&cfg.roots));
+    // Name and path as first seen, kept so an exit can still name the process.
+    let mut tracked: HashMap<u32, (String, String)> = HashMap::new();
+    let mut prev: HashMap<Key, Endpoint> = HashMap::new();
+    let mut baseline = true;
+    let (mut samples, mut failed) = (0u64, 0u64);
+    let mut last_ok: Option<Duration> = None;
+    let mut max_gap: Option<Duration> = None;
+
+    let reason = loop {
+        let at = src.elapsed();
+        match sample(src, tracker.as_mut(), cfg, &prev) {
+            Ok((changes, next)) => {
+                samples += 1;
+                if let Some(before) = last_ok {
+                    let gap = at.saturating_sub(before);
+                    max_gap = Some(max_gap.map_or(gap, |longest| longest.max(gap)));
+                }
+                last_ok = Some(at);
+                let stamp = timestamp(src.wall());
+                for change in &changes {
+                    let (identity, reason) = match change {
+                        Change::Root(identity) => (identity, "root"),
+                        Change::Joined(identity) => (identity, "descendant"),
+                        Change::Exited(_) => continue,
+                    };
+                    let names = src.names(identity.pid);
+                    let line = process_line(&stamp, "tracked", Some(reason), identity, &names);
+                    writeln!(out, "{line}")?;
+                    tracked.insert(identity.pid, names);
+                }
+                for (kind, endpoint, start) in delta(&prev, &next, baseline) {
+                    writeln!(out, "{}", endpoint_line(&stamp, kind, endpoint, start))?;
+                }
+                prev = next;
+                for change in &changes {
+                    if let Change::Exited(identity) = change {
+                        let names = tracked.remove(&identity.pid).unwrap_or_default();
+                        let line = process_line(&stamp, "exited", None, identity, &names);
+                        writeln!(out, "{line}")?;
+                    }
+                }
+                if baseline {
+                    // Everything above this record was already there; every
+                    // endpoint event below it is a change. A caller that wants
+                    // to observe an action starts it after reading this.
+                    baseline = false;
+                    let processes = tracker.as_ref().map(Tracker::len);
+                    writeln!(out, "{}", baseline_line(&stamp, prev.len(), processes))?;
+                }
+            }
+            Err(message) => {
+                failed += 1;
+                writeln!(out, "{}", error_line(&timestamp(src.wall()), &message))?;
+            }
+        }
+        out.flush()?;
+        if tracker.as_ref().is_some_and(Tracker::is_empty) {
+            break EndReason::ScopeExited;
+        }
+
+        let now = src.elapsed().saturating_sub(began);
+        if cfg.duration.is_some_and(|limit| now >= limit) {
+            break EndReason::Duration;
+        }
+        // Fixed cadence from the start time. A sample that overran its slot
+        // skips to the next future slot instead of sampling back to back.
+        let slot = now.as_nanos() / cfg.interval.as_nanos().max(1) + 1;
+        let mut due = cfg
+            .interval
+            .saturating_mul(u32::try_from(slot).unwrap_or(u32::MAX));
+        if let Some(limit) = cfg.duration {
+            // The last sample is taken at the limit, not one interval short.
+            due = due.min(limit);
+        }
+        if !src.wait(due.saturating_sub(now)) {
+            break EndReason::Interrupted;
+        }
+    };
+
+    let elapsed = src.elapsed().saturating_sub(began);
+    let line = end_line(
+        &timestamp(src.wall()),
+        reason,
+        samples,
+        failed,
+        max_gap,
+        elapsed,
+    );
+    writeln!(out, "{line}")?;
+    out.flush()?;
+    Ok(Summary {
+        reason,
+        samples,
+        failed,
+    })
+}
+
+/// One sample: sockets first, then the process table, so a failure of
+/// either leaves the tracker untouched and the sample counts as failed.
+fn sample<S: Source>(
+    src: &mut S,
+    tracker: Option<&mut Tracker>,
+    cfg: &Config,
+    prev: &HashMap<Key, Endpoint>,
+) -> Result<(Vec<Change>, HashMap<Key, Endpoint>), String> {
+    let mut endpoints = src.endpoints()?;
+    let (changes, tree) = match tracker {
+        Some(tree) => {
+            let table = src.processes()?;
+            let changes = tree.update(&table);
+            endpoints.retain(|e| tree.contains(e.key.pid));
+            (changes, Some(&*tree))
+        }
+        None => (Vec::new(), None),
+    };
+    if let Some(filter) = &cfg.filter {
+        endpoints.retain(|e| filter.matches(e));
+    }
+
+    // A process can exit between the socket sample and its identity lookup.
+    // Its endpoint keeps the start time it had last sample rather than
+    // turning into a second endpoint with no identity.
+    let known: HashMap<&EndpointKey, ProcStart> = prev
+        .keys()
+        .filter_map(|(key, start)| start.map(|s| (key, s)))
+        .collect();
+    let mut looked_up: HashMap<u32, Option<ProcStart>> = HashMap::new();
+    let mut next = HashMap::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        let pid = endpoint.key.pid;
+        let start = match tree {
+            Some(tree) => tree.start_of(pid),
+            None => *looked_up
+                .entry(pid)
+                .or_insert_with(|| src.identity(pid).map(|identity| identity.start)),
+        }
+        .or_else(|| known.get(&endpoint.key).copied());
+        // Duplicated descriptors of one socket are one endpoint.
+        next.entry((endpoint.key.clone(), start))
+            .or_insert(endpoint);
+    }
+    Ok((changes, next))
+}
+
+/// Events between two samples, in a stable order: by PID, protocol and
+/// addresses, with a close ahead of an open of the same tuple.
+fn delta<'a>(
+    prev: &'a HashMap<Key, Endpoint>,
+    next: &'a HashMap<Key, Endpoint>,
+    baseline: bool,
+) -> Vec<(Kind, &'a Endpoint, Option<ProcStart>)> {
+    let mut events = Vec::new();
+    for (key, endpoint) in next {
+        let kind = match prev.get(key) {
+            None if baseline => Kind::Existing,
+            None => Kind::New,
+            Some(old) if old.state != endpoint.state => Kind::Changed(old.state),
+            Some(_) => continue,
+        };
+        events.push((kind, endpoint, key.1));
+    }
+    for (key, endpoint) in prev {
+        if !next.contains_key(key) {
+            events.push((Kind::Closed, endpoint, key.1));
+        }
+    }
+    events.sort_by_key(|(kind, endpoint, _)| {
+        let rank = match kind {
+            Kind::Closed => 0u8,
+            Kind::Changed(_) => 1,
+            Kind::Existing => 2,
+            Kind::New => 3,
+        };
+        (
+            endpoint.key.pid,
+            endpoint.key.proto == Proto::Udp,
+            endpoint.key.local,
+            endpoint.key.remote,
+            rank,
+        )
+    });
+    events
+}
+
+// --- records ---------------------------------------------------------------
+
+fn start_line(cfg: &Config, stamp: &str) -> String {
+    let roots: Vec<String> = cfg
+        .roots
+        .iter()
+        .map(|root| {
+            Json::object()
+                .number("pid", u64::from(root.pid))
+                .string("start", &start_stamp(root.start))
+                .finish()
+        })
+        .collect();
+    let filter = match &cfg.filter {
+        None => "null".to_string(),
+        Some(Filter::Pid(pid)) => Json::object().number("pid", u64::from(*pid)).finish(),
+        Some(Filter::Name(name)) => Json::object().string("name", name).finish(),
+    };
+    let duration = match cfg.duration {
+        Some(limit) => limit.as_secs().to_string(),
+        None => "null".into(),
+    };
+    Json::object()
+        .string("type", "start")
+        .string("schema", SCHEMA)
+        .string("version", env!("CARGO_PKG_VERSION"))
+        .string("ts", stamp)
+        .number("interval_ms", millis(cfg.interval))
+        .raw("duration_s", &duration)
+        .raw("roots", &format!("[{}]", roots.join(",")))
+        .raw("filter", &filter)
+        // Chosen by whoever started the process, not by this tool.
+        .raw("untrusted_fields", r#"["process.name","process.path"]"#)
+        .finish()
+}
+
+fn process_line(
+    stamp: &str,
+    event: &str,
+    reason: Option<&str>,
+    identity: &ProcIdentity,
+    names: &(String, String),
+) -> String {
+    let process = Json::object()
+        .number("pid", u64::from(identity.pid))
+        .number("ppid", u64::from(identity.ppid))
+        .string("start", &start_stamp(identity.start))
+        .string("name", &names.0)
+        .string("path", &names.1)
+        .finish();
+    let mut line = Json::object()
+        .string("type", "process")
+        .string("ts", stamp)
+        .string("event", event);
+    if let Some(reason) = reason {
+        line = line.string("reason", reason);
+    }
+    line.raw("process", &process).finish()
+}
+
+fn endpoint_line(stamp: &str, kind: Kind, e: &Endpoint, start: Option<ProcStart>) -> String {
+    let event = match kind {
+        Kind::Existing => "existing",
+        Kind::New => "new",
+        Kind::Changed(_) => "changed",
+        Kind::Closed => "closed",
+    };
+    let process = Json::object()
+        .number("pid", u64::from(e.key.pid))
+        .optional("start", start.map(start_stamp).as_deref())
+        .string("name", &e.process)
+        .string("path", &e.path)
+        .finish();
+    let address = |addr: std::net::SocketAddr| {
+        Json::object()
+            .string("ip", &numeric_ip(addr.ip()))
+            .number("port", u64::from(addr.port()))
+            .finish()
+    };
+    let mut line = Json::object()
+        .string("type", "endpoint")
+        .string("ts", stamp)
+        .string("event", event)
+        .raw("process", &process)
+        .string(
+            "proto",
+            match e.key.proto {
+                Proto::Tcp => "tcp",
+                Proto::Udp => "udp",
+            },
+        )
+        .number(
+            "ip_version",
+            match e.key.ip_ver {
+                IpVer::V4 => 4,
+                IpVer::V6 => 6,
+            },
+        )
+        .string(
+            "dir",
+            match e.dir {
+                Dir::In => "in",
+                Dir::Out => "out",
+                Dir::Listen => "listen",
+                Dir::Unknown => "unknown",
+            },
+        )
+        .raw("local", &address(e.key.local))
+        .raw("remote", &address(e.key.remote))
+        .optional("state", e.state.map(TcpState::as_str));
+    if let Kind::Changed(before) = kind {
+        line = line.optional("prev_state", before.map(TcpState::as_str));
+    }
+    line.boolean("off_box", is_offbox(e.key.remote)).finish()
+}
+
+fn baseline_line(stamp: &str, endpoints: usize, processes: Option<usize>) -> String {
+    let processes = match processes {
+        Some(count) => count.to_string(),
+        None => "null".into(),
+    };
+    Json::object()
+        .string("type", "baseline")
+        .string("ts", stamp)
+        .number("endpoints", endpoints as u64)
+        // Tracked processes when the watch is scoped to a tree.
+        .raw("processes", &processes)
+        .finish()
+}
+
+fn error_line(stamp: &str, message: &str) -> String {
+    Json::object()
+        .string("type", "error")
+        .string("ts", stamp)
+        .string("message", message)
+        .finish()
+}
+
+fn end_line(
+    stamp: &str,
+    reason: EndReason,
+    samples: u64,
+    failed: u64,
+    max_gap: Option<Duration>,
+    elapsed: Duration,
+) -> String {
+    let gap = match max_gap {
+        Some(gap) => millis(gap).to_string(),
+        None => "null".into(),
+    };
+    Json::object()
+        .string("type", "end")
+        .string("ts", stamp)
+        .string("reason", reason.as_str())
+        .number("samples", samples)
+        .number("failed_samples", failed)
+        .raw("max_gap_ms", &gap)
+        .number("elapsed_ms", millis(elapsed))
+        .finish()
+}
+
+fn millis(time: Duration) -> u64 {
+    u64::try_from(time.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// A flat JSON object. Keys are literals from this file; values go through
+/// `json_string` or are numbers, booleans and objects built the same way.
+struct Json(String);
+
+impl Json {
+    fn object() -> Self {
+        Json("{".into())
+    }
+
+    fn key(mut self, key: &str) -> Self {
+        if self.0.len() > 1 {
+            self.0.push(',');
+        }
+        self.0.push('"');
+        self.0.push_str(key);
+        self.0.push_str("\":");
+        self
+    }
+
+    fn raw(self, key: &str, json: &str) -> Self {
+        let mut object = self.key(key);
+        object.0.push_str(json);
+        object
+    }
+
+    fn string(self, key: &str, value: &str) -> Self {
+        self.raw(key, &json_string(value))
+    }
+
+    fn optional(self, key: &str, value: Option<&str>) -> Self {
+        match value {
+            Some(value) => self.string(key, value),
+            None => self.raw(key, "null"),
+        }
+    }
+
+    fn number(self, key: &str, value: u64) -> Self {
+        self.raw(key, &value.to_string())
+    }
+
+    fn boolean(self, key: &str, value: bool) -> Self {
+        self.raw(key, if value { "true" } else { "false" })
+    }
+
+    fn finish(mut self) -> String {
+        self.0.push('}');
+        self.0
+    }
+}
+
+/// A JSON string literal. Controls, bidi and zero-width formatting, and the
+/// Unicode line separators are written as `\uXXXX`: a JSON parser reads the
+/// exact value back, while the line stays one line and cannot reorder or
+/// hide text in a terminal. Process names and paths are attacker-chosen.
+pub fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if is_spoofing_char(c) || matches!(c, '\u{2028}' | '\u{2029}') => {
+                let mut units = [0u16; 2];
+                for unit in c.encode_utf16(&mut units) {
+                    out.push_str(&format!("\\u{unit:04x}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+// --- time ------------------------------------------------------------------
+
+/// `YYYY-MM-DDTHH:MM:SS` in UTC for seconds since the Unix epoch.
+fn date_time(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(i64::MAX / 2);
+    let rem = secs % 86_400;
+    // Civil-from-days, proleptic Gregorian (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}",
+        rem / 3_600,
+        rem % 3_600 / 60,
+        rem % 60
+    )
+}
+
+/// RFC 3339 UTC with milliseconds, for when a record was written.
+fn timestamp(at: SystemTime) -> String {
+    let since = at.duration_since(UNIX_EPOCH).unwrap_or_default();
+    format!(
+        "{}.{:03}Z",
+        date_time(since.as_secs()),
+        since.subsec_millis()
+    )
+}
+
+/// RFC 3339 UTC with microseconds: the kernel's exact process start time,
+/// which together with the PID identifies one process.
+fn start_stamp(start: ProcStart) -> String {
+    format!("{}.{:06}Z", date_time(start.sec), start.usec.min(999_999))
+}
+
+// --- the live machine ------------------------------------------------------
+
+static STOP: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn request_stop(_signal: libc::c_int) {
+    // Only an atomic store: safe to run inside a signal handler.
+    STOP.store(true, Ordering::SeqCst);
+}
+
+/// Live sockets and processes, the system clocks, and a stop flag set by
+/// SIGINT or SIGTERM so an interrupted watch still writes its end record.
+pub struct Live {
+    began: Instant,
+}
+
+impl Live {
+    pub fn new() -> Self {
+        let handler = request_stop as *const () as libc::sighandler_t;
+        // SAFETY: the handler only stores to an atomic. Replacing the default
+        // action for these two signals affects this process alone.
+        unsafe {
+            libc::signal(libc::SIGINT, handler);
+            libc::signal(libc::SIGTERM, handler);
+        }
+        Self {
+            began: Instant::now(),
+        }
+    }
+}
+
+impl Default for Live {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Source for Live {
+    fn endpoints(&mut self) -> Result<Vec<Endpoint>, String> {
+        // A panic in the collector must not end a long watch; the sample
+        // is reported as failed instead.
+        match std::panic::catch_unwind(snapshot) {
+            Ok(result) => result.map_err(|e| e.0),
+            Err(_) => Err("socket snapshot panicked".into()),
+        }
+    }
+
+    fn processes(&mut self) -> Result<Vec<ProcIdentity>, String> {
+        procinfo::table()
+    }
+
+    fn identity(&mut self, pid: u32) -> Option<ProcIdentity> {
+        procinfo::identity(pid)
+    }
+
+    fn names(&mut self, pid: u32) -> (String, String) {
+        process_names(pid)
+    }
+
+    fn wall(&mut self) -> SystemTime {
+        SystemTime::now()
+    }
+
+    fn elapsed(&mut self) -> Duration {
+        self.began.elapsed()
+    }
+
+    fn wait(&mut self, time: Duration) -> bool {
+        let until = Instant::now() + time;
+        loop {
+            if STOP.load(Ordering::SeqCst) {
+                return false;
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return true;
+            }
+            // Short slices keep a stop request responsive.
+            std::thread::sleep(left.min(Duration::from_millis(50)));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::SocketAddr;
+
+    const EPOCH: u64 = 1_700_000_000; // 2023-11-14T22:13:20Z
+
+    fn start(sec: u64) -> ProcStart {
+        ProcStart { sec, usec: 5 }
+    }
+
+    fn proc(pid: u32, ppid: u32) -> ProcIdentity {
+        ProcIdentity {
+            pid,
+            ppid,
+            start: start(EPOCH - 100 + u64::from(pid)),
+        }
+    }
+
+    fn tcp(pid: u32, local: u16, remote: &str, state: TcpState) -> Endpoint {
+        let local: SocketAddr = format!("127.0.0.1:{local}").parse().unwrap();
+        Endpoint {
+            key: EndpointKey {
+                pid,
+                proto: Proto::Tcp,
+                ip_ver: IpVer::V4,
+                local,
+                remote: remote.parse().unwrap(),
+            },
+            state: Some(state),
+            dir: Dir::Out,
+            process: format!("proc{pid}"),
+            path: format!("/bin/proc{pid}"),
+        }
+    }
+
+    struct Tick {
+        endpoints: Result<Vec<Endpoint>, String>,
+        processes: Result<Vec<ProcIdentity>, String>,
+    }
+
+    fn tick(endpoints: Vec<Endpoint>, processes: Vec<ProcIdentity>) -> Tick {
+        Tick {
+            endpoints: Ok(endpoints),
+            processes: Ok(processes),
+        }
+    }
+
+    /// Scripted samples on a virtual clock. The last tick repeats.
+    struct Fake {
+        ticks: Vec<Tick>,
+        taken: usize,
+        clock: Duration,
+        sample_cost: Duration,
+        stop_at: Option<Duration>,
+        unknown: Vec<u32>,
+        waits: Vec<Duration>,
+    }
+
+    impl Fake {
+        fn new(ticks: Vec<Tick>) -> Self {
+            Self {
+                ticks,
+                taken: 0,
+                clock: Duration::ZERO,
+                sample_cost: Duration::ZERO,
+                stop_at: None,
+                unknown: Vec::new(),
+                waits: Vec::new(),
+            }
+        }
+
+        fn current(&self) -> &Tick {
+            &self.ticks[self.taken.saturating_sub(1).min(self.ticks.len() - 1)]
+        }
+    }
+
+    impl Source for Fake {
+        fn endpoints(&mut self) -> Result<Vec<Endpoint>, String> {
+            self.taken += 1;
+            self.clock += self.sample_cost;
+            self.current().endpoints.clone()
+        }
+
+        fn processes(&mut self) -> Result<Vec<ProcIdentity>, String> {
+            self.current().processes.clone()
+        }
+
+        fn identity(&mut self, pid: u32) -> Option<ProcIdentity> {
+            (!self.unknown.contains(&pid)).then(|| proc(pid, 1))
+        }
+
+        fn names(&mut self, pid: u32) -> (String, String) {
+            (format!("proc{pid}"), format!("/bin/proc{pid}"))
+        }
+
+        fn wall(&mut self) -> SystemTime {
+            UNIX_EPOCH + Duration::from_secs(EPOCH) + self.clock
+        }
+
+        fn elapsed(&mut self) -> Duration {
+            self.clock
+        }
+
+        fn wait(&mut self, time: Duration) -> bool {
+            self.waits.push(time);
+            if self.stop_at.is_some_and(|stop| self.clock + time >= stop) {
+                return false;
+            }
+            self.clock += time;
+            true
+        }
+    }
+
+    fn config(interval_ms: u64, duration_s: Option<u64>) -> Config {
+        Config {
+            interval: Duration::from_millis(interval_ms),
+            duration: duration_s.map(Duration::from_secs),
+            roots: Vec::new(),
+            filter: None,
+        }
+    }
+
+    fn watch(cfg: &Config, src: &mut Fake) -> (Summary, Vec<String>) {
+        let mut out = Vec::new();
+        let summary = run(cfg, src, &mut out).expect("in-memory writes succeed");
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.ends_with('\n'));
+        (summary, text.lines().map(str::to_string).collect())
+    }
+
+    #[test]
+    fn timestamps_are_rfc3339_utc_across_leap_years() {
+        for (secs, expected) in [
+            (0, "1970-01-01T00:00:00"),
+            (86_399, "1970-01-01T23:59:59"),
+            (951_782_400, "2000-02-29T00:00:00"),
+            (1_709_251_199, "2024-02-29T23:59:59"),
+            (1_709_251_200, "2024-03-01T00:00:00"),
+            (EPOCH, "2023-11-14T22:13:20"),
+            (4_102_444_800, "2100-01-01T00:00:00"),
+            (4_107_542_400, "2100-03-01T00:00:00"),
+        ] {
+            assert_eq!(date_time(secs), expected);
+        }
+        let at = UNIX_EPOCH + Duration::new(EPOCH, 7_654_321);
+        assert_eq!(timestamp(at), "2023-11-14T22:13:20.007Z");
+        assert_eq!(timestamp(UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
+        let exact = ProcStart {
+            sec: EPOCH,
+            usec: 42,
+        };
+        assert_eq!(start_stamp(exact), "2023-11-14T22:13:20.000042Z");
+    }
+
+    #[test]
+    fn json_strings_escape_quotes_controls_and_spoofing_characters() {
+        assert_eq!(json_string(""), "\"\"");
+        assert_eq!(json_string("café 📡 שלום"), "\"café 📡 שלום\"");
+        assert_eq!(json_string("a\"b\\c"), r#""a\"b\\c""#);
+        assert_eq!(json_string("a\nb\rc\td"), r#""a\nb\rc\td""#);
+        assert_eq!(
+            json_string("x\u{0000}\u{001b}\u{007f}\u{0085}"),
+            r#""x\u0000\u001b\u007f\u0085""#
+        );
+        // Bidi override, zero-width space, BOM and line separators stay
+        // recoverable but cannot act on a terminal or split the line.
+        assert_eq!(
+            json_string("evil\u{202E}gpj\u{200B}\u{FEFF}\u{2028}\u{2029}"),
+            r#""evil\u202egpj\u200b\ufeff\u2028\u2029""#
+        );
+        let hostile = json_string("\",\"type\":\"end\"}\n{\"forged\":\"");
+        assert!(!hostile.contains('\n'));
+        assert_eq!(hostile, r#""\",\"type\":\"end\"}\n{\"forged\":\"""#);
+    }
+
+    #[test]
+    fn start_and_end_records_frame_the_stream() {
+        let mut src = Fake::new(vec![tick(vec![], vec![])]);
+        let (summary, lines) = watch(&config(1000, Some(2)), &mut src);
+        assert_eq!(
+            lines,
+            [
+                format!(
+                    "{{\"type\":\"start\",\"schema\":\"netboard.watch/1\",\"version\":\"{}\",\
+                     \"ts\":\"2023-11-14T22:13:20.000Z\",\"interval_ms\":1000,\"duration_s\":2,\
+                     \"roots\":[],\"filter\":null,\
+                     \"untrusted_fields\":[\"process.name\",\"process.path\"]}}",
+                    env!("CARGO_PKG_VERSION")
+                ),
+                "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":0,\"processes\":null}"
+                    .to_string(),
+                "{\"type\":\"end\",\"ts\":\"2023-11-14T22:13:22.000Z\",\"reason\":\"duration\",\
+                 \"samples\":3,\"failed_samples\":0,\"max_gap_ms\":1000,\"elapsed_ms\":2000}"
+                    .to_string(),
+            ]
+        );
+        assert_eq!(
+            summary,
+            Summary {
+                reason: EndReason::Duration,
+                samples: 3,
+                failed: 0
+            }
+        );
+        assert_eq!(src.waits, [Duration::from_secs(1); 2]);
+    }
+
+    #[test]
+    fn endpoints_are_reported_as_existing_new_changed_and_closed() {
+        let peer = "192.0.2.7:443";
+        let mut src = Fake::new(vec![
+            tick(
+                vec![tcp(7, 5000, "127.0.0.1:80", TcpState::Established)],
+                vec![],
+            ),
+            tick(
+                vec![
+                    tcp(7, 5000, "127.0.0.1:80", TcpState::Established),
+                    tcp(9, 6000, peer, TcpState::SynSent),
+                ],
+                vec![],
+            ),
+            tick(
+                vec![
+                    tcp(7, 5000, "127.0.0.1:80", TcpState::Established),
+                    tcp(9, 6000, peer, TcpState::Established),
+                ],
+                vec![],
+            ),
+            tick(vec![], vec![]),
+        ]);
+        let (summary, lines) = watch(&config(1000, Some(3)), &mut src);
+        assert_eq!(summary.samples, 4);
+        assert_eq!(
+            lines[1..lines.len() - 1],
+            [
+                "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"event\":\"existing\",\
+                 \"process\":{\"pid\":7,\"start\":\"2023-11-14T22:11:47.000005Z\",\"name\":\"proc7\",\
+                 \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
+                 \"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
+                 \"remote\":{\"ip\":\"127.0.0.1\",\"port\":80},\"state\":\"ESTABLISHED\",\
+                 \"off_box\":false}",
+                "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":1,\
+                 \"processes\":null}",
+                "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:21.000Z\",\"event\":\"new\",\
+                 \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
+                 \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
+                 \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
+                 \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"SYN_SENT\",\
+                 \"off_box\":true}",
+                "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:22.000Z\",\"event\":\"changed\",\
+                 \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
+                 \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
+                 \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
+                 \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"ESTABLISHED\",\
+                 \"prev_state\":\"SYN_SENT\",\"off_box\":true}",
+                "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:23.000Z\",\"event\":\"closed\",\
+                 \"process\":{\"pid\":7,\"start\":\"2023-11-14T22:11:47.000005Z\",\"name\":\"proc7\",\
+                 \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
+                 \"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
+                 \"remote\":{\"ip\":\"127.0.0.1\",\"port\":80},\"state\":\"ESTABLISHED\",\
+                 \"off_box\":false}",
+                "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:23.000Z\",\"event\":\"closed\",\
+                 \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
+                 \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
+                 \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
+                 \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"ESTABLISHED\",\
+                 \"off_box\":true}",
+            ]
+        );
+    }
+
+    #[test]
+    fn udp_and_listen_endpoints_have_null_state_and_real_unspecified_addresses() {
+        let mut udp = tcp(3, 5353, "0.0.0.0:0", TcpState::Closed);
+        udp.key.proto = Proto::Udp;
+        udp.key.local = "[::]:5353".parse().unwrap();
+        udp.key.remote = "[::]:0".parse().unwrap();
+        udp.key.ip_ver = IpVer::V6;
+        udp.state = None;
+        udp.dir = Dir::Unknown;
+        let mut src = Fake::new(vec![tick(vec![udp], vec![])]);
+        src.unknown.push(3);
+        let (_, lines) = watch(&config(1000, Some(1)), &mut src);
+        assert_eq!(
+            lines[1],
+            "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"event\":\"existing\",\
+             \"process\":{\"pid\":3,\"start\":null,\"name\":\"proc3\",\"path\":\"/bin/proc3\"},\
+             \"proto\":\"udp\",\"ip_version\":6,\"dir\":\"unknown\",\
+             \"local\":{\"ip\":\"::\",\"port\":5353},\"remote\":{\"ip\":\"::\",\"port\":0},\
+             \"state\":null,\"off_box\":false}"
+        );
+    }
+
+    #[test]
+    fn duplicate_descriptors_are_one_endpoint_and_a_reused_pid_is_another() {
+        let a = tcp(7, 5000, "192.0.2.7:443", TcpState::Established);
+        let prev: HashMap<Key, Endpoint> =
+            HashMap::from([((a.key.clone(), Some(start(1))), a.clone())]);
+        // Same PID and tuple, different process start: close then open.
+        let next: HashMap<Key, Endpoint> =
+            HashMap::from([((a.key.clone(), Some(start(2))), a.clone())]);
+        let kinds: Vec<(Kind, Option<ProcStart>)> = delta(&prev, &next, false)
+            .into_iter()
+            .map(|(kind, _, started)| (kind, started))
+            .collect();
+        assert_eq!(
+            kinds,
+            [(Kind::Closed, Some(start(1))), (Kind::New, Some(start(2)))]
+        );
+        assert!(delta(&prev, &prev, false).is_empty());
+
+        let mut src = Fake::new(vec![tick(vec![a.clone(), a.clone()], vec![])]);
+        let (_, lines) = watch(&config(1000, Some(1)), &mut src);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+    }
+
+    #[test]
+    fn an_exiting_process_keeps_its_identity_until_its_endpoint_closes() {
+        let a = tcp(7, 5000, "192.0.2.7:443", TcpState::Established);
+        let mut src = Fake::new(vec![
+            tick(vec![a.clone()], vec![]),
+            tick(vec![a.clone()], vec![]),
+            tick(vec![], vec![]),
+        ]);
+        let cfg = config(1000, Some(2));
+        let mut out = Vec::new();
+        // Identity is readable for the first sample only.
+        struct Fading(Fake);
+        impl Source for Fading {
+            fn endpoints(&mut self) -> Result<Vec<Endpoint>, String> {
+                self.0.endpoints()
+            }
+            fn processes(&mut self) -> Result<Vec<ProcIdentity>, String> {
+                self.0.processes()
+            }
+            fn identity(&mut self, pid: u32) -> Option<ProcIdentity> {
+                (self.0.taken == 1).then(|| proc(pid, 1))
+            }
+            fn names(&mut self, pid: u32) -> (String, String) {
+                self.0.names(pid)
+            }
+            fn wall(&mut self) -> SystemTime {
+                self.0.wall()
+            }
+            fn elapsed(&mut self) -> Duration {
+                self.0.elapsed()
+            }
+            fn wait(&mut self, time: Duration) -> bool {
+                self.0.wait(time)
+            }
+        }
+        src.sample_cost = Duration::ZERO;
+        run(&cfg, &mut Fading(src), &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let events: Vec<&str> = text
+            .lines()
+            .filter(|line| line.contains("\"type\":\"endpoint\""))
+            .collect();
+        assert_eq!(events.len(), 2, "{text}");
+        assert!(events[0].contains("\"event\":\"existing\""));
+        assert!(events[1].contains("\"event\":\"closed\""));
+        assert!(events[1].contains("\"start\":\"2023-11-14T22:11:47.000005Z\""));
+    }
+
+    #[test]
+    fn tree_scope_reports_processes_and_only_their_endpoints() {
+        let (root, child, other) = (proc(100, 1), proc(200, 100), proc(900, 1));
+        let adopted = ProcIdentity { ppid: 1, ..child };
+        let mine = tcp(200, 5000, "192.0.2.7:443", TcpState::Established);
+        let theirs = tcp(900, 7000, "192.0.2.9:443", TcpState::Established);
+        let mut src = Fake::new(vec![
+            tick(vec![theirs.clone()], vec![root, other]),
+            tick(vec![mine.clone(), theirs.clone()], vec![root, child, other]),
+            // The root exits; its child is adopted by launchd and keeps going.
+            tick(vec![mine.clone(), theirs.clone()], vec![adopted, other]),
+            tick(vec![theirs.clone()], vec![other]),
+        ]);
+        let mut cfg = config(1000, None);
+        cfg.roots = vec![root];
+        let (summary, lines) = watch(&cfg, &mut src);
+        assert_eq!(summary.reason, EndReason::ScopeExited);
+        assert_eq!(summary.samples, 4);
+        let shape: Vec<String> = lines
+            .iter()
+            .map(|line| {
+                let field = |name: &str| {
+                    let tail = line.split_once(&format!("\"{name}\":")).map(|(_, t)| t);
+                    tail.and_then(|t| t.split([',', '}']).next())
+                        .unwrap_or("-")
+                        .trim_matches('"')
+                        .to_string()
+                };
+                format!("{} {} pid={}", field("type"), field("event"), field("pid"))
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                "start - pid=100",
+                "process tracked pid=100",
+                "baseline - pid=-",
+                "process tracked pid=200",
+                "endpoint new pid=200",
+                "process exited pid=100",
+                "endpoint closed pid=200",
+                "process exited pid=200",
+                "end - pid=-",
+            ],
+            "{lines:#?}"
+        );
+        assert!(!lines.iter().any(|line| line.contains("\"pid\":900")));
+        assert_eq!(
+            lines[1],
+            "{\"type\":\"process\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"event\":\"tracked\",\
+             \"reason\":\"root\",\"process\":{\"pid\":100,\"ppid\":1,\
+             \"start\":\"2023-11-14T22:13:20.000005Z\",\"name\":\"proc100\",\
+             \"path\":\"/bin/proc100\"}}"
+        );
+        assert_eq!(
+            lines[2],
+            "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":0,\
+             \"processes\":1}"
+        );
+        assert!(lines[3].contains("\"reason\":\"descendant\""));
+        assert!(lines[3].contains("\"ppid\":100"));
+        assert!(lines[0]
+            .contains("\"roots\":[{\"pid\":100,\"start\":\"2023-11-14T22:13:20.000005Z\"}]"));
+        assert!(lines[8].contains("\"reason\":\"scope_exited\""));
+    }
+
+    #[test]
+    fn filter_narrows_endpoints_and_is_recorded() {
+        let mut src = Fake::new(vec![tick(
+            vec![
+                tcp(7, 5000, "192.0.2.7:443", TcpState::Established),
+                tcp(9, 6000, "192.0.2.7:443", TcpState::Established),
+            ],
+            vec![],
+        )]);
+        for (filter, record, pid) in [
+            (Filter::parse("9"), "\"filter\":{\"pid\":9}", "\"pid\":9"),
+            (
+                Filter::parse("PROC7"),
+                "\"filter\":{\"name\":\"proc7\"}",
+                "\"pid\":7",
+            ),
+        ] {
+            src.taken = 0;
+            src.clock = Duration::ZERO;
+            let mut cfg = config(1000, Some(1));
+            cfg.filter = Some(filter);
+            let (_, lines) = watch(&cfg, &mut src);
+            assert!(lines[0].contains(record), "{}", lines[0]);
+            assert_eq!(lines.len(), 4);
+            assert!(lines[1].contains(pid), "{}", lines[1]);
+        }
+    }
+
+    #[test]
+    fn failed_samples_are_recorded_and_do_not_close_endpoints() {
+        let a = tcp(7, 5000, "192.0.2.7:443", TcpState::Established);
+        let mut src = Fake::new(vec![
+            tick(vec![a.clone()], vec![]),
+            Tick {
+                endpoints: Err("libproc sockets: \"denied\"".into()),
+                processes: Ok(vec![]),
+            },
+            tick(vec![a.clone()], vec![]),
+        ]);
+        let (summary, lines) = watch(&config(1000, Some(2)), &mut src);
+        assert_eq!((summary.samples, summary.failed), (2, 1));
+        assert_eq!(lines.len(), 5, "{lines:#?}");
+        assert!(lines[1].contains("\"event\":\"existing\""));
+        assert!(lines[2].contains("\"type\":\"baseline\""));
+        assert_eq!(
+            lines[3],
+            "{\"type\":\"error\",\"ts\":\"2023-11-14T22:13:21.000Z\",\
+             \"message\":\"libproc sockets: \\\"denied\\\"\"}"
+        );
+        // The gap spans the failed sample: two seconds went unobserved.
+        assert!(lines[4].contains("\"samples\":2,\"failed_samples\":1,\"max_gap_ms\":2000"));
+    }
+
+    #[test]
+    fn a_failed_process_scan_fails_the_sample_without_ending_the_scope() {
+        let root = proc(100, 1);
+        let mut src = Fake::new(vec![
+            Tick {
+                endpoints: Ok(vec![]),
+                processes: Err("libproc could not list processes".into()),
+            },
+            tick(vec![], vec![root]),
+            tick(vec![], vec![]),
+        ]);
+        let mut cfg = config(1000, None);
+        cfg.roots = vec![root];
+        let (summary, lines) = watch(&cfg, &mut src);
+        assert_eq!((summary.samples, summary.failed), (2, 1));
+        assert_eq!(summary.reason, EndReason::ScopeExited);
+        // The baseline is the first sample that succeeded, not the first tried.
+        assert!(lines[1].contains("\"type\":\"error\""));
+        assert!(lines[2].contains("\"event\":\"tracked\""));
+        assert!(lines[3].contains("\"type\":\"baseline\""));
+        assert!(lines[3].contains("\"ts\":\"2023-11-14T22:13:21.000Z\""));
+        assert!(lines[4].contains("\"event\":\"exited\""));
+        // One successful pair of samples, one second apart.
+        assert!(lines[5].contains("\"max_gap_ms\":1000"));
+    }
+
+    #[test]
+    fn an_interrupt_ends_the_stream_with_its_reason_and_no_gap_for_one_sample() {
+        let mut src = Fake::new(vec![tick(vec![], vec![])]);
+        src.stop_at = Some(Duration::from_millis(500));
+        let (summary, lines) = watch(&config(1000, None), &mut src);
+        assert_eq!(summary.reason, EndReason::Interrupted);
+        assert_eq!(
+            lines[2],
+            "{\"type\":\"end\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"reason\":\"interrupted\",\
+             \"samples\":1,\"failed_samples\":0,\"max_gap_ms\":null,\"elapsed_ms\":0}"
+        );
+    }
+
+    #[test]
+    fn the_last_sample_lands_on_the_limit_and_slow_samples_skip_slots() {
+        // 700 ms cadence inside a 2 s window: 0, 700, 1400, then 2000.
+        let mut src = Fake::new(vec![tick(vec![], vec![])]);
+        let (summary, _) = watch(&config(700, Some(2)), &mut src);
+        assert_eq!(summary.samples, 4);
+        assert_eq!(
+            src.waits,
+            [
+                Duration::from_millis(700),
+                Duration::from_millis(700),
+                Duration::from_millis(600)
+            ]
+        );
+
+        // Each sample takes 2.5 s against a 1 s interval: samples start at
+        // 0 and 3 s, never back to back, and the gap is reported as 3 s.
+        let mut src = Fake::new(vec![tick(vec![], vec![])]);
+        src.sample_cost = Duration::from_millis(2500);
+        let (summary, lines) = watch(&config(1000, Some(5)), &mut src);
+        assert_eq!(summary.samples, 2);
+        assert_eq!(src.waits, [Duration::from_millis(500)]);
+        assert!(lines[2].contains("\"max_gap_ms\":3000,\"elapsed_ms\":5500"));
+    }
+
+    #[test]
+    fn a_write_error_ends_the_watch() {
+        struct Closed;
+        impl Write for Closed {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut src = Fake::new(vec![tick(vec![], vec![])]);
+        let err = run(&config(1000, None), &mut src, &mut Closed).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        assert_eq!(src.taken, 0, "no sample after the reader went away");
+    }
+}

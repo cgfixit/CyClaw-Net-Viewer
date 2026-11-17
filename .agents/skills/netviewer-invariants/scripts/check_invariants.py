@@ -46,6 +46,7 @@ def main() -> int:
         lib = read(root, "src/lib.rs")
         kill = read(root, "src/kill.rs")
         export = read(root, "src/export.rs")
+        watch = read(root, "src/watch.rs")
         ci = read(root, ".github/workflows/ci.yml")
         toolchain = read(root, "rust-toolchain.toml")
     except FileNotFoundError as err:
@@ -110,6 +111,21 @@ def main() -> int:
         "export_create_new_0600",
         ".create_new(true)" in export and ".mode(0o600)" in export,
         "src/export.rs must use create_new + mode 0o600",
+    )
+    check(
+        "watch_never_resolves_names",
+        re.search(r"\b(dns|ptr)::|lookup_ip|getnameinfo", watch) is None,
+        "src/watch.rs must not reach name resolution",
+    )
+    check(
+        "watch_schema_versioned",
+        re.search(r'pub const SCHEMA: &str = "netboard\.watch/\d+";', watch) is not None,
+        "src/watch.rs must declare a versioned SCHEMA",
+    )
+    check(
+        "watch_declares_untrusted_fields",
+        '"untrusted_fields"' in watch and "process.name" in watch and "process.path" in watch,
+        "watch start record must mark process name and path untrusted",
     )
     check(
         "ci_contents_read",

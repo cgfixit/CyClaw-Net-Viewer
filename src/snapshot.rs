@@ -264,15 +264,21 @@ fn unspecified_remote(local: IpAddr) -> SocketAddr {
 /// Fresh process name for `pid`, using the same "?" placeholder as snapshots.
 /// Lets termination re-check that a PID still names the confirmed process.
 pub fn process_name(pid: u32) -> String {
-    let name = if pid == 0 {
-        String::new()
+    process_names(pid).0
+}
+
+/// Fresh process name and executable path for `pid`, with the snapshot's
+/// "?" placeholder for a name that cannot be read. The path may be empty.
+pub fn process_names(pid: u32) -> (String, String) {
+    let (name, path) = if pid == 0 {
+        (String::new(), String::new())
     } else {
-        proc_names(pid).0
+        proc_names(pid)
     };
     if name.is_empty() {
-        "?".into()
+        ("?".into(), path)
     } else {
-        name
+        (name, path)
     }
 }
 
@@ -352,7 +358,7 @@ pub fn fmt_addr(addr: SocketAddr, host: Option<&str>) -> String {
 /// Characters that can forge rows or reorder text in a terminal, table cell,
 /// or pasteboard: Unicode controls plus bidi overrides/isolates/marks and
 /// zero-width joiners. Process names and paths are attacker-chosen.
-fn is_spoofing_char(c: char) -> bool {
+pub(crate) fn is_spoofing_char(c: char) -> bool {
     c.is_control()
         || matches!(
             c,

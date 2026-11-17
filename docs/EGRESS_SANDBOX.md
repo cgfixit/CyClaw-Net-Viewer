@@ -62,3 +62,34 @@ It cannot prove absence of short-lived traffic between snapshots or that an
 OS sandbox blocks all connections. UDP remote peers are unavailable through
 the current Darwin socket library and are covered separately as Unknown
 direction in `tests/live_listen.rs`. No CyClaw AI runtime is required.
+
+## Watch and process-tree fixtures
+
+`tests/watch.rs` drives the real binary in `--watch` mode with the same kind
+of native Bash loopback fixture, and is part of `cargo test --locked`. Run
+it alone with:
+
+```bash
+cargo test --locked --test watch
+```
+
+A pass requires:
+
+1. A watch filtered to an idle shell reports its `baseline`, then exactly
+   one `new` and one `closed` event for the connection the shell opens and
+   closes, with the same PID and kernel start time in both.
+2. SIGTERM ends an unbounded watch with an `end` record (`interrupted`),
+   exit status 0, and nothing on stderr.
+3. With `--tree` on a root shell, a connection held by its child is in the
+   baseline and attributed to the child. After the root exits and launchd
+   adopts the child, a second connection from that child is still reported,
+   with the identity it had before. When the child exits the watch ends by
+   itself with `scope_exited`.
+4. A one-shot `--cli --tree` snapshot of the test process contains that
+   process's own loopback connection.
+5. Invalid watch arguments and an unidentifiable `--tree` PID exit 2 before
+   anything is sampled, and a reader that closes the pipe ends the watch
+   without a panic.
+
+These fixtures show that the stream reports what a sample can see. They do
+not measure how short a connection can be and still be caught.

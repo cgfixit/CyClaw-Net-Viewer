@@ -11,10 +11,14 @@ pub mod diff;
 pub mod dns;
 pub mod export;
 pub mod kill;
+pub mod procinfo;
+pub mod proctree;
 pub mod ptr;
 pub mod snapshot;
+pub mod watch;
 
 pub use diff::{diff, Highlight, Row};
+pub use procinfo::{ProcIdentity, ProcStart};
 pub use snapshot::{
     csv_escape, fmt_addr, is_offbox, process_name, sanitize_clipboard_text, snapshot, Dir,
     Endpoint, EndpointKey, IpVer, Proto, SnapshotError, TcpState,

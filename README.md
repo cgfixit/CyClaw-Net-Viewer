@@ -34,6 +34,9 @@ Synthetic data, documentation IP ranges only.*
   export visible rows to `~/Downloads` as a private CSV, and terminate the
   owning process after a confirmation.
 - Ships a double-click `.app` and a Tcpvcon-style CLI in the same `netboard` binary.
+- Watches without a window: `--watch` writes one JSON line per socket that
+  opens, changes state, or closes, and `--tree PID` follows a process and
+  everything it starts. See [Watch mode](#watch-mode).
 
 See [Direction](docs/DESIGN.md#direction). Refresh,
 deletion, and address rules: [Design](docs/DESIGN.md).
@@ -81,6 +84,7 @@ CLI uses step 1 only, and `-n` skips DNS entirely.
 
 ```text
 netboard --cli [-a] [-c] [-n] [process|pid]
+netboard --cli --watch [--interval MS] [--for SECONDS] [process|pid]
 ```
 
 | Flag | Effect |
@@ -91,6 +95,53 @@ netboard --cli [-a] [-c] [-n] [process|pid]
 | `-c` | CSV |
 | `-n` | Numeric addresses, no reverse DNS |
 | `process` or `pid` | Optional filter |
+| `--tree PID` | Only this process and its descendants. Repeat for up to 16 roots. Works with a snapshot or a watch |
+| `--watch` | Keep sampling and write JSON Lines events. Selects the CLI by itself |
+| `--interval MS` | Time between watch samples, 50 to 60000 (default 1000) |
+| `--for SECONDS` | End the watch after this long, 1 to 86400 |
+
+### Watch mode
+
+```bash
+umask 077
+my-agent & netboard --cli --watch --tree $! > agent-sockets.jsonl
+```
+
+That records the sockets `my-agent` and its children hold, sample by sample,
+until the last of them exits. The agent is already running when the first
+sample is taken; to see its very first sockets, watch your shell instead,
+wait for the `baseline` record, then launch
+([recipe](docs/DESIGN.md#observing-a-command-from-its-first-socket)).
+Each line is one JSON object:
+
+```json
+{"type":"start","schema":"netboard.watch/1","version":"0.1.3","ts":"2026-11-17T03:04:05.000Z","interval_ms":1000,"duration_s":null,"roots":[{"pid":2108,"start":"2026-11-17T03:04:04.512345Z"}],"filter":null,"untrusted_fields":["process.name","process.path"]}
+{"type":"process","ts":"2026-11-17T03:04:05.003Z","event":"tracked","reason":"root","process":{"pid":2108,"ppid":611,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"}}
+{"type":"baseline","ts":"2026-11-17T03:04:05.003Z","endpoints":0,"processes":1}
+{"type":"endpoint","ts":"2026-11-17T03:04:07.004Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"192.0.2.10","port":54321},"remote":{"ip":"198.51.100.7","port":443},"state":"ESTABLISHED","off_box":true}
+{"type":"end","ts":"2026-11-17T03:04:09.006Z","reason":"scope_exited","samples":5,"failed_samples":0,"max_gap_ms":1001,"elapsed_ms":4003}
+```
+
+- Endpoint events are `existing` (already open at the first sample), `new`,
+  `changed` (TCP state, with `prev_state`), and `closed`. Everything before
+  the `baseline` record was already there; every endpoint event after it is
+  a change.
+- With `--tree`, a child stays tracked after its parent exits and launchd
+  adopts it. A process is the PID plus its kernel start time, so a reused
+  PID is never mistaken for the old process.
+- Watch output is every endpoint, always numeric. It never resolves a name
+  and never sends anything.
+- The watch ends on `--for`, on Ctrl-C or SIGTERM, or when every tracked
+  process has exited, and still writes its `end` record.
+- Exit 0 means every sample succeeded. Exit 2 is a usage error, a `--tree`
+  PID that could not be identified, a failed sample, or a failed write.
+
+A watch reports what it sampled. A socket that opens and closes between two
+samples is never seen, so an empty stream is not proof that nothing was
+sent; `max_gap_ms` in the `end` record is the longest unobserved interval.
+Process names and paths are chosen by whoever started the process: treat
+them as untrusted text, above all before showing the file to a language
+model. Record fields, ordering, and limits: [Design](docs/DESIGN.md#watch-stream).
 
 ## Get the app
 
@@ -172,7 +223,7 @@ this Darwin library; use the
 [macOS CI results](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/ci.yml).
 
 Runtime boundaries (no App Sandbox, confirmed SIGTERM, numeric CLI, private
-CSV): [SECURITY.md](SECURITY.md).
+CSV, watch output): [SECURITY.md](SECURITY.md).
 
 ## Docs
 
