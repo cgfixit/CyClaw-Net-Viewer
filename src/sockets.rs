@@ -529,6 +529,25 @@ mod tests {
     }
 
     #[test]
+    fn an_unreaped_child_is_gone_not_unreadable() {
+        let mut child = std::process::Command::new("/usr/bin/true")
+            .spawn()
+            .expect("start a child that exits at once");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while procinfo::identity(pid).is_some() {
+            assert!(std::time::Instant::now() < deadline, "child never exited");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Exited but not waited for: a zombie. It must not count as a gap,
+        // or every watch with a short-lived child would end incomplete.
+        let scan = scan().expect("scan");
+        let unreadable = scan.unreadable.contains(&pid);
+        assert!(child.wait().unwrap().success());
+        assert!(!unreadable, "zombie {pid} was reported unreadable");
+    }
+
+    #[test]
     fn scan_sees_a_listener_this_process_holds() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let local = listener.local_addr().unwrap();
