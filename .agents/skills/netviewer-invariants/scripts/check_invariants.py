@@ -139,6 +139,44 @@ def main() -> int:
         and "offset_of!(SocketInfo, soi_proto) == 240" in sockets,
         "src/sockets.rs must keep its compile-time layout assertions",
     )
+    policy = read(root, "src/policy.rs")
+    netclass = read(root, "src/netclass.rs")
+    check(
+        "policy_ships_no_rules",
+        "include_str!" not in policy
+        and "Default for Policy" not in policy
+        and "include_str!" not in watch,
+        "src/policy.rs must load rules only from the operator's --policy file",
+    )
+    check(
+        "policy_only_observes",
+        all(
+            token not in text
+            for text in (policy, netclass, watch)
+            for token in (
+                "libc::kill(",
+                "kill::",
+                "libc::connect",
+                "libc::socket(",
+                "UdpSocket::",
+                "TcpStream::",
+                "TcpListener::",
+            )
+        ),
+        "policy checks and the watch loop must not signal processes or open sockets",
+    )
+    check(
+        "verdict_codes_match_yara_gate",
+        "Verdict::Pass => 0" in watch
+        and "Verdict::Violation => 1" in watch
+        and "Verdict::Incomplete => 2" in watch,
+        "watch verdict exit codes must stay 0 pass, 1 violation, 2 incomplete",
+    )
+    check(
+        "unreadable_processes_counted",
+        "Listing::Unreadable" in sockets and "unreadable.push(pid)" in sockets,
+        "src/sockets.rs must report processes it cannot read instead of skipping them silently",
+    )
     check(
         "ci_contents_read",
         re.search(r"(?m)^permissions:\s*\r?\n\s+contents:\s+read\s*$", ci) is not None

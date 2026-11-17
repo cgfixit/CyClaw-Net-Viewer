@@ -53,9 +53,18 @@ check run requiring write access.
   seen, a failed sample observes nothing, and an empty stream does not
   establish that nothing was sent. Exit 0 means every sample succeeded,
   not that the watched processes were quiet.
+- `--policy FILE` reads one operator-written file: a regular file of at
+  most 64 KiB of UTF-8, refused before sampling if it does not parse, with
+  an error that names the line and never echoes its text. No rule ships in
+  the binary; `docs/examples/` holds starting points. A policy only
+  classifies what a watch saw. It blocks nothing and signals nothing, and
+  its `pass` verdict (exit 0) means no violation was seen, with the
+  sampling gap above. A process the watch cannot read makes the verdict
+  `incomplete` (exit 2) instead of passing silently.
 - `--tree PID` follows observed parentage, keyed on PID plus kernel start
   time. It is not containment: a process whose parent exits before a scan
-  sees both, or that runs as another user, is not followed. A root that
+  sees both, or that runs as another user, is not followed (one running as
+  another user is counted in `unreadable_processes`). A root that
   cannot be identified is refused (exit 2) instead of printing nothing.
   SIGINT and SIGTERM end a watch after its `end` record; the handler only
   sets a flag.

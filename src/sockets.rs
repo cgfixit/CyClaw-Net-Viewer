@@ -204,22 +204,57 @@ fn parse(pid: u32, info: &SocketFdInfo) -> Option<RawSocket> {
     })
 }
 
-/// Descriptors of `pid` into `fds`. `false` when the process is gone or
-/// this user may not read it (another user's process, SIP, TCC).
-fn list_fds(pid: libc::pid_t, fds: &mut Vec<libc::proc_fdinfo>) -> bool {
+/// What listing one process's descriptors found.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Listing {
+    Listed,
+    /// The process exited, or is a zombie that holds no descriptors.
+    Gone,
+    /// The process exists and this user may not read it.
+    Unreadable,
+}
+
+fn errno() -> c_int {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
+}
+
+fn clear_errno() {
+    // SAFETY: `__error` returns this thread's errno slot, which is always valid.
+    unsafe { *libc::__error() = 0 };
+}
+
+/// Why a listing call returned nothing: an exited process (ESRCH, or a
+/// zombie) is not a gap in what was seen; anything else is.
+fn failed(pid: libc::pid_t) -> Listing {
+    let code = errno();
+    if code == libc::ESRCH || procinfo::is_zombie(pid as u32) {
+        Listing::Gone
+    } else {
+        Listing::Unreadable
+    }
+}
+
+/// Descriptors of `pid` into `fds`. A process another user owns, or one
+/// SIP or TCC protects, is `Unreadable`; one that exited is `Gone`.
+fn list_fds(pid: libc::pid_t, fds: &mut Vec<libc::proc_fdinfo>) -> Listing {
     let entry = size_of::<libc::proc_fdinfo>();
+    fds.clear();
+    clear_errno();
     // SAFETY: a null buffer of size zero only asks for the byte count.
     let need =
         unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
-    if need <= 0 {
-        return false;
+    if need < 0 || (need == 0 && errno() != 0) {
+        return failed(pid);
+    }
+    if need == 0 {
+        // A readable process with no descriptors at all.
+        return Listing::Listed;
     }
     // Room for descriptors opened between the two calls.
     let capacity = need as usize / entry + 16;
     let Ok(bytes) = c_int::try_from(capacity * entry) else {
-        return false;
+        return Listing::Unreadable;
     };
-    fds.clear();
     fds.resize(
         capacity,
         libc::proc_fdinfo {
@@ -227,6 +262,7 @@ fn list_fds(pid: libc::pid_t, fds: &mut Vec<libc::proc_fdinfo>) -> bool {
             proc_fdtype: 0,
         },
     );
+    clear_errno();
     // SAFETY: the buffer is writable for `bytes` bytes and outlives the call.
     let got = unsafe {
         libc::proc_pidinfo(
@@ -238,10 +274,15 @@ fn list_fds(pid: libc::pid_t, fds: &mut Vec<libc::proc_fdinfo>) -> bool {
         )
     };
     if got <= 0 {
-        return false;
+        fds.clear();
+        return if got == 0 && errno() == 0 {
+            Listing::Listed
+        } else {
+            failed(pid)
+        };
     }
     fds.truncate((got as usize / entry).min(capacity));
-    true
+    Listing::Listed
 }
 
 /// The socket record of one descriptor. `proc_pidfdinfo` returns 0, not a
@@ -268,15 +309,29 @@ fn socket_info(pid: libc::pid_t, fd: i32) -> Option<SocketFdInfo> {
 /// Every TCP and UDP socket this user can see. A process that exits, or a
 /// descriptor that closes, during the walk is skipped. Only a failure to
 /// list processes at all is an error.
-pub fn scan() -> Result<Vec<RawSocket>, String> {
+/// Every socket this user may read, and the processes whose descriptors
+/// could not be read. Those are gaps, not quiet processes: anything they
+/// hold is missing from `sockets`.
+pub struct Scan {
+    pub sockets: Vec<RawSocket>,
+    pub unreadable: Vec<u32>,
+}
+
+pub fn scan() -> Result<Scan, String> {
     let mut sockets = Vec::new();
+    let mut unreadable = Vec::new();
     let mut fds = Vec::new();
     for pid in procinfo::pids()? {
         let Ok(target) = libc::pid_t::try_from(pid) else {
             continue;
         };
-        if !list_fds(target, &mut fds) {
-            continue;
+        match list_fds(target, &mut fds) {
+            Listing::Listed => {}
+            Listing::Gone => continue,
+            Listing::Unreadable => {
+                unreadable.push(pid);
+                continue;
+            }
         }
         for fd in &fds {
             if fd.proc_fdtype != libc::PROX_FDTYPE_SOCKET as u32 {
@@ -287,7 +342,10 @@ pub fn scan() -> Result<Vec<RawSocket>, String> {
             }
         }
     }
-    Ok(sockets)
+    Ok(Scan {
+        sockets,
+        unreadable,
+    })
 }
 
 #[cfg(test)]
@@ -475,8 +533,10 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
         let local = listener.local_addr().unwrap();
         let me = std::process::id();
-        let sockets = scan().expect("scan");
-        assert!(sockets.iter().any(|s| {
+        let scan = scan().expect("scan");
+        // This process can always read itself.
+        assert!(!scan.unreadable.contains(&me));
+        assert!(scan.sockets.iter().any(|s| {
             s.pid == me
                 && s.proto == Proto::Tcp
                 && s.local == local

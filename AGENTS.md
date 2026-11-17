@@ -20,6 +20,8 @@ open PRs for overlapping work first and use `.github/PULL_REQUEST_TEMPLATE.md`.
 - `src/sockets.rs`: libproc socket walk and the `socket_fdinfo` mirror.
 - `src/snapshot.rs`: direction, process metadata, formatting.
 - `src/peers.rs`: which local process holds the other end of a connection.
+- `src/netclass.rs`: address classes and exposed receivers.
+- `src/policy.rs`: operator policy file parser and checker (ships no rules).
 - `src/diff.rs`: endpoint identity and highlight lifecycle.
 - `src/watch.rs`: headless `--watch` loop, JSON Lines records, signal stop.
 - `src/procinfo.rs`, `src/proctree.rs`: libproc process identity (PID plus

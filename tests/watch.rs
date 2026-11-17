@@ -197,9 +197,11 @@ fn help_lists_the_watch_and_tree_flags() {
     assert!(output.status.success());
     let help = String::from_utf8(output.stderr).unwrap();
     for text in [
-        "netboard --cli --watch [--interval MS] [--for SECONDS] [process|pid]",
+        "netboard --cli --watch [--interval MS] [--for SECONDS] [--policy FILE] [process|pid]",
         "  --tree PID ",
         "  --peers ",
+        "  --class ",
+        "  --policy FILE ",
         "  --watch ",
         "  --interval MS ",
         "  --for SECONDS ",
@@ -225,7 +227,7 @@ fn bounded_watch_of_nothing_is_a_start_and_an_end_record() {
          \"peer.processes.name\",\"peer.processes.path\"]}"
     ));
     assert!(lines[1].starts_with("{\"type\":\"baseline\","));
-    assert!(lines[1].ends_with("\"endpoints\":0,\"processes\":null}"));
+    assert!(lines[1].ends_with("\"endpoints\":0,\"processes\":null,\"unreadable_processes\":0}"));
     assert!(lines[2].starts_with("{\"type\":\"end\","));
     assert_eq!(field(lines[2], "reason"), "duration");
     assert_eq!(field(lines[2], "failed_samples"), "0");
@@ -419,7 +421,7 @@ fn tree_watch_follows_a_reparented_child_until_the_whole_tree_exits() {
     assert_eq!(field(&joined, "start"), field(&held, "start"));
     let baseline = watch.wait_for("baseline record", |l| field(l, "type") == "baseline");
     assert!(
-        baseline.ends_with("\"endpoints\":1,\"processes\":2}"),
+        baseline.ends_with("\"endpoints\":1,\"processes\":2,\"unreadable_processes\":0}"),
         "{baseline}"
     );
 
@@ -526,4 +528,274 @@ fn snapshot_tree_includes_this_process_and_its_own_sockets() {
         String::from_utf8(outside.stdout).unwrap(),
         "Process,PID,Proto,Dir,Local,Remote,State,Path\n"
     );
+}
+
+/// A policy file in a directory of its own, removed when dropped.
+struct PolicyFile(std::path::PathBuf);
+
+impl PolicyFile {
+    fn new(name: &str, text: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "netboard-policy-test-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("policy");
+        std::fs::write(&path, text).unwrap();
+        Self(path)
+    }
+
+    fn path(&self) -> &str {
+        self.0.to_str().unwrap()
+    }
+}
+
+impl Drop for PolicyFile {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+}
+
+/// An idle shell that connects to `remote` on "start" and exits on "finish".
+fn connecting_shell(remote: std::net::SocketAddr) -> (OwnedChild, std::process::ChildStdin) {
+    let mut bash = OwnedChild(
+        Command::new("/bin/bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                "set -eu; read -r start; exec 3<>/dev/tcp/\"$1\"/\"$2\"; read -r finish",
+                "netviewer-policy",
+                &remote.ip().to_string(),
+                &remote.port().to_string(),
+            ])
+            .env_remove("BASH_ENV")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start native Bash fixture"),
+    );
+    let input = bash.0.stdin.take().unwrap();
+    (bash, input)
+}
+
+#[test]
+fn a_policy_watch_exits_with_its_verdict() {
+    for (rules, want_code, want_violation) in [
+        ("allow loopback proto tcp\n", 0, false),
+        ("allow lan\n", 1, true),
+    ] {
+        let policy = PolicyFile::new(
+            &format!("verdict-{want_code}"),
+            &format!("netboard-policy 1\n{rules}"),
+        );
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("bind loopback fixture");
+        let remote = listener.local_addr().unwrap();
+        let (bash, mut input) = connecting_shell(remote);
+        let pid = bash.0.id().to_string();
+        let mut watch = Watcher::start(&[
+            "--watch",
+            "--interval",
+            "100",
+            "--tree",
+            &pid,
+            "--policy",
+            policy.path(),
+        ]);
+        let start = watch.wait_for("start record", |l| field(l, "type") == "start");
+        assert!(start.contains("\"policy\":{\"rules\":1}"), "{start}");
+        watch.wait_for("baseline record", |l| field(l, "type") == "baseline");
+        input.write_all(b"start\n").unwrap();
+        let opened = watch.wait_for("new endpoint", |l| {
+            is(l, "endpoint", "new") && field(l, "pid") == pid
+        });
+        assert!(
+            opened.contains(
+                "\"remote_class\":\"loopback\",\"local_class\":\"loopback\",\"exposed\":false"
+            ),
+            "{opened}"
+        );
+        if want_violation {
+            let violation = watch.wait_for("violation", |l| field(l, "type") == "violation");
+            assert_eq!(field(&violation, "breach"), "connection");
+            assert_eq!(field(&violation, "pid"), pid);
+            assert!(violation.contains(&format!(
+                "\"remote\":{{\"ip\":\"127.0.0.1\",\"port\":{}}}",
+                remote.port()
+            )));
+        }
+        let _held = accept(&listener);
+        input.write_all(b"finish\n").unwrap();
+        let (code, stderr, lines) = watch.finish();
+        assert_eq!(code, Some(want_code), "{stderr}\n{lines:#?}");
+        let end = lines.last().unwrap();
+        assert_eq!(field(end, "reason"), "scope_exited");
+        let violations = lines
+            .iter()
+            .filter(|l| field(l, "type") == "violation")
+            .count();
+        if want_violation {
+            assert_eq!(violations, 1, "reported once: {lines:#?}");
+            assert!(
+                end.ends_with(
+                    "\"policy\":{\"verdict\":\"violation\",\"violations\":1,\"incomplete\":[]}}"
+                ),
+                "{end}"
+            );
+            assert_eq!(
+                stderr.trim_end(),
+                "policy violation: 1 endpoint(s) no rule permits"
+            );
+        } else {
+            assert_eq!(violations, 0, "{lines:#?}");
+            assert!(
+                end.ends_with(
+                    "\"policy\":{\"verdict\":\"pass\",\"violations\":0,\"incomplete\":[]}}"
+                ),
+                "{end}"
+            );
+            assert!(stderr.is_empty(), "{stderr}");
+        }
+    }
+}
+
+#[test]
+fn a_bounded_policy_watch_stopped_early_is_incomplete() {
+    let policy = PolicyFile::new("interrupted", "netboard-policy 1\nallow any\nlisten any\n");
+    let mut watch = Watcher::start(&[
+        "--watch",
+        "--interval",
+        "100",
+        "--for",
+        "60",
+        "--policy",
+        policy.path(),
+        "4294967295",
+    ]);
+    watch.wait_for("baseline record", |l| field(l, "type") == "baseline");
+    // SAFETY: the target is this test's own child, not yet reaped.
+    let sent = unsafe { libc::kill(watch.child.0.id() as libc::pid_t, libc::SIGTERM) };
+    assert_eq!(sent, 0);
+    let (code, stderr, lines) = watch.finish();
+    assert_eq!(code, Some(2), "{stderr}");
+    assert_eq!(stderr.trim_end(), "policy incomplete: interrupted");
+    assert!(lines.last().unwrap().ends_with(
+        "\"policy\":{\"verdict\":\"incomplete\",\"violations\":0,\"incomplete\":[\"interrupted\"]}}"
+    ));
+}
+
+#[test]
+fn a_bad_policy_is_refused_before_anything_is_sampled() {
+    let bad = PolicyFile::new("bad", "netboard-policy 1\nallow everything.example\n");
+    let headless = PolicyFile::new("headless", "allow any\n");
+    let missing = format!("{}.absent", bad.path());
+    for (path, expected) in [
+        (
+            bad.path(),
+            "--policy line 2: the target is not `any`, a class, an address or a network",
+        ),
+        (
+            headless.path(),
+            "--policy line 1: the first rule line must be `netboard-policy 1`",
+        ),
+    ] {
+        let output = run(&["--watch", "--policy", path]);
+        assert_eq!(output.status.code(), Some(2));
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().trim_end(),
+            expected
+        );
+        assert!(output.stdout.is_empty());
+    }
+    let output = run(&["--watch", "--policy", &missing]);
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8(output.stderr)
+        .unwrap()
+        .starts_with("--policy: "));
+    assert!(output.stdout.is_empty());
+    let output = run(&["--cli", "--policy", bad.path()]);
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim_end(),
+        "--policy needs --watch"
+    );
+}
+
+fn unprivileged() -> bool {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() != 0 }
+}
+
+#[test]
+fn an_unscoped_watch_without_root_counts_processes_it_cannot_read() {
+    if !unprivileged() {
+        eprintln!("skipped: root reads every process");
+        return;
+    }
+    let output = run(&["--watch", "--interval", "100", "--for", "1"]);
+    assert_eq!(output.status.code(), Some(0));
+    let text = String::from_utf8(output.stdout).unwrap();
+    let baseline = text
+        .lines()
+        .find(|l| field(l, "type") == "baseline")
+        .unwrap();
+    let count: u64 = field(baseline, "unreadable_processes").parse().unwrap();
+    // launchd (PID 1) and the window server belong to other users.
+    assert!(count > 0, "{baseline}");
+    // Counted, not listed, when nothing narrows the scope.
+    assert!(!text.contains("\"event\":\"unreadable\""));
+}
+
+#[test]
+fn a_tree_watch_is_incomplete_when_a_descendant_runs_as_another_user() {
+    let sudo = Command::new("/usr/bin/sudo")
+        .args(["-n", "/usr/bin/true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if !unprivileged() || !sudo.is_ok_and(|s| s.success()) {
+        eprintln!("skipped: needs a non-root user with non-interactive sudo");
+        return;
+    }
+    let policy = PolicyFile::new("sudo", "netboard-policy 1\nallow any\nlisten any\n");
+    let mut bash = OwnedChild(
+        Command::new("/bin/bash")
+            .args([
+                "--noprofile",
+                "--norc",
+                "-c",
+                "read -r go; /usr/bin/sudo -n /bin/sleep 6",
+            ])
+            .env_remove("BASH_ENV")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start native Bash fixture"),
+    );
+    let mut input = bash.0.stdin.take().unwrap();
+    let pid = bash.0.id().to_string();
+    let mut watch = Watcher::start(&[
+        "--watch",
+        "--interval",
+        "100",
+        "--for",
+        "3",
+        "--tree",
+        &pid,
+        "--policy",
+        policy.path(),
+    ]);
+    watch.wait_for("baseline record", |l| field(l, "type") == "baseline");
+    input.write_all(b"go\n").unwrap();
+    let gap = watch.wait_for("unreadable descendant", |l| is(l, "process", "unreadable"));
+    assert_ne!(field(&gap, "pid"), pid);
+    let (code, stderr, lines) = watch.finish();
+    assert_eq!(code, Some(2), "{stderr}\n{lines:#?}");
+    assert_eq!(stderr.trim_end(), "policy incomplete: unreadable_processes");
+    let end = lines.last().unwrap();
+    assert!(end.contains("\"verdict\":\"incomplete\""), "{end}");
+    assert_ne!(field(end, "unreadable_processes"), "0");
 }

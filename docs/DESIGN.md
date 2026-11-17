@@ -76,16 +76,18 @@ a field or a field changes meaning. Every record has `type` and `ts`
 
 | `type` | Written | Fields |
 | --- | --- | --- |
-| `start` | First line, before any sample | `schema`, `version`, `interval_ms`, `duration_s` or null, `roots` (`pid`, `start`), `filter` (`{"pid":n}`, `{"name":"…"}` or null), `untrusted_fields` |
-| `process` | Tree scope only | `event` `tracked` or `exited`; `reason` `root` or `descendant` on `tracked`; `process` with `pid`, `ppid`, `start`, `name`, `path` |
-| `endpoint` | A difference between two samples | `event` `existing`, `new`, `changed` or `closed`; `process` with `pid`, `start` or null, `name`, `path`; `proto` `tcp`/`udp`; `ip_version` 4/6; `dir` `in`/`out`/`listen`/`unknown`; `local` and `remote` as `{"ip","port"}`; `state` or null; `prev_state` on `changed`; `off_box`; `peer` or null ([local peers](#local-peers)) |
-| `baseline` | Once, closing the first successful sample | `endpoints`, and `processes` (tracked count) or null without `--tree` |
+| `start` | First line, before any sample | `schema`, `version`, `interval_ms`, `duration_s` or null, `roots` (`pid`, `start`), `filter` (`{"pid":n}`, `{"name":"…"}` or null), `policy` (`{"rules":n}` or null), `untrusted_fields` |
+| `process` | Tree scope, or any scoped watch for `unreadable` | `event` `tracked`, `exited` or `unreadable`; `reason` `root` or `descendant` on `tracked`; `process` with `pid`, `ppid`, `start`, `name`, `path` (`unreadable` gives `pid`, `name`, `path` only) |
+| `endpoint` | A difference between two samples | `event` `existing`, `new`, `changed` or `closed`; `process` with `pid`, `start` or null, `name`, `path`; `proto` `tcp`/`udp`; `ip_version` 4/6; `dir` `in`/`out`/`listen`/`unknown`; `local` and `remote` as `{"ip","port"}`; `state` or null; `prev_state` on `changed`; `off_box`; `remote_class` or null; `local_class`; `exposed` ([address classes](#address-classes)); `peer` or null ([local peers](#local-peers)) |
+| `violation` | With `--policy`, once per endpoint no rule permits, right after its `endpoint` record | `breach` `connection` or `listener`; `process`; `proto`; `local`; `remote`; `state`; `remote_class`; `local_class` ([policy](POLICY.md)) |
+| `baseline` | Once, closing the first successful sample | `endpoints`, `processes` (tracked count) or null without `--tree`, `unreadable_processes` so far |
 | `error` | A sample failed | `message` |
-| `end` | Last line | `reason` `duration`, `interrupted` or `scope_exited`; `samples`; `failed_samples`; `max_gap_ms` or null; `elapsed_ms` |
+| `end` | Last line | `reason` `duration`, `interrupted` or `scope_exited`; `samples`; `failed_samples`; `max_gap_ms` or null; `elapsed_ms`; `unreadable_processes`; `policy` (`verdict`, `violations`, `incomplete`) or null |
 
 Within one sample the order is: `tracked` processes (parents before their
-children), endpoint events sorted by PID, protocol and addresses (a `closed`
-ahead of a `new` for the same tuple), then `exited` processes. The first
+children), `unreadable` processes by PID, endpoint events sorted by PID,
+protocol and addresses (a `closed` ahead of a `new` for the same tuple, and
+any `violation` right after the event it is about), then `exited` processes. The first
 successful sample reports every endpoint as `existing` and ends with
 `baseline`.
 
@@ -113,12 +115,54 @@ successful sample reports every endpoint as `existing` and ends with
 - **Failures.** A sample fails only when processes cannot be listed at all
   (or the collector panics, which is caught). It writes `error`, changes no
   state, and closes nothing; the next good sample is compared with the last
-  good one. Any failed sample makes the exit status 2.
+  good one. Any failed sample makes the exit status 2, and makes a policy
+  verdict `incomplete` unless a violation was seen.
 - **Stopping.** SIGINT and SIGTERM set a flag that the wait loop checks
   every 50 ms, so the `end` record is still written. A closed reader is
   noticed on the next write and ends the watch quietly with status 0.
 - **No DNS.** Watch mode has no name-resolution path at all; `-n` and `-a`
   are implied and `-c` is refused.
+
+### Address classes
+
+`src/netclass.rs` names the class of an address (`wildcard`, `loopback`,
+`lan`, `multicast`, `public`, `other`; ranges in [Policy](POLICY.md#address-classes))
+and decides when a socket is *exposed*. Off-box is still the single bit it
+always was (not unspecified, not loopback); the class says where off-box goes.
+
+- A *receiver* is a TCP listener or an unconnected UDP socket bound to a
+  port. An unconnected UDP socket counts even when its owner only uses it to
+  send with `sendto`: it receives from any sender, and the kernel records no
+  peer that would say otherwise.
+- A receiver is *exposed* when its local address is a wildcard or any
+  non-loopback address. A connection is never exposed; it is classed by its
+  peer.
+- The classes are not `ptr::scope`, which decides where a PTR query may be
+  sent and is deliberately narrower (it treats IPv6 unique-local as never
+  sendable, for example).
+
+The GUI uses the same test: **Off-box only** keeps exposed listeners,
+**Color remotes** gives them the off-box fill, and the status bar counts them.
+Event colors still take precedence.
+
+### Unreadable processes
+
+`sockets::scan` lists every PID, then each PID's descriptors. When that
+listing fails it now says why. `ESRCH`, or a zombie, means the process is
+gone, which is not a gap. Anything else (`EPERM` for another user's process,
+or one SIP or TCC protects) means the process exists and could not be read,
+and the PID is returned in `Scan::unreadable`. A watch reports the ones in
+scope:
+
+- Unscoped: all of them, as a count only. Without root that is hundreds.
+- `--tree`: descendants found by walking `proc_listchildpids` from each
+  member, then from each unreadable child in turn. Listing children needs
+  no permission over them. Unreadable descendants are never members, because
+  membership needs a start time from `PROC_PIDTBSDINFO`.
+- A filter: the PID, or a name that matches the process name or the last
+  component of its executable path.
+
+The snapshot CLI and the GUI do not show the count yet.
 
 ### Local peers
 
@@ -191,8 +235,10 @@ Limits, all inherent to sampling without privileges:
   not seen. Neither is a child whose parent exits before a scan sees them
   together (a double fork): it is never linked to the tree.
 - `PROC_PIDTBSDINFO` is same-user unless root. A descendant running as
-  another user cannot be identified or followed; its sockets are hidden
-  from an unprivileged viewer anyway.
+  another user cannot be identified or followed, and its sockets are hidden
+  from an unprivileged viewer. It is no longer hidden silently: a watch
+  finds it through the child lists and counts it in `unreadable_processes`
+  ([unreadable processes](#unreadable-processes)).
 - A shorter `--interval` narrows these windows and costs more CPU: every
   sample walks every process's descriptors.
 

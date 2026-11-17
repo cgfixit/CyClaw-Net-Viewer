@@ -7,18 +7,20 @@
 //!
 //! Watch output is always numeric: this module has no name-resolution path.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cli::Filter;
+use crate::netclass::{self, Class};
 use crate::peers::{local_peers, Via};
+use crate::policy::{Breach, Policy};
 use crate::procinfo::{self, ProcIdentity, ProcStart};
 use crate::proctree::{Change, Tracker};
 use crate::snapshot::{
-    is_offbox, is_spoofing_char, numeric_ip, process_names, snapshot, Dir, Endpoint, EndpointKey,
-    IpVer, Proto, TcpState,
+    is_offbox, is_spoofing_char, numeric_ip, process_names, Dir, Endpoint, EndpointKey, IpVer,
+    Proto, Sample, TcpState,
 };
 
 /// Bumped when a record gains, loses or changes the meaning of a field.
@@ -35,6 +37,40 @@ pub struct Config {
     /// Empty means every process; otherwise these and their descendants.
     pub roots: Vec<ProcIdentity>,
     pub filter: Option<Filter>,
+    /// Checked against every endpoint in scope; the end record gives a verdict.
+    pub policy: Option<Policy>,
+}
+
+/// The answer to "did the watched scope stay inside the policy?".
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Verdict {
+    /// Every sample succeeded, every process in scope was readable, and
+    /// nothing seen broke the policy. Not proof: see the sampling gap.
+    Pass,
+    /// Something seen broke the policy. Takes precedence over Incomplete:
+    /// what was missed can only add to what was seen.
+    Violation,
+    /// Nothing seen broke the policy, but part of the scope went unseen.
+    Incomplete,
+}
+
+impl Verdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Verdict::Pass => "pass",
+            Verdict::Violation => "violation",
+            Verdict::Incomplete => "incomplete",
+        }
+    }
+
+    /// The process exit code, matching yara-gate's: 0, 1, 2.
+    pub fn exit_code(self) -> i32 {
+        match self {
+            Verdict::Pass => 0,
+            Verdict::Violation => 1,
+            Verdict::Incomplete => 2,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -61,12 +97,21 @@ pub struct Summary {
     pub samples: u64,
     /// Samples that failed. Nothing was observed for those intervals.
     pub failed: u64,
+    /// Distinct processes in scope whose sockets could not be read.
+    pub unreadable: usize,
+    /// Endpoints that broke the policy, each counted once.
+    pub violations: u64,
+    /// `None` without a policy.
+    pub verdict: Option<Verdict>,
 }
 
 /// Everything the loop takes from the machine, so tests can script it.
 pub trait Source {
-    fn endpoints(&mut self) -> Result<Vec<Endpoint>, String>;
+    /// Endpoints, and the processes whose sockets could not be read.
+    fn endpoints(&mut self) -> Result<Sample, String>;
     fn processes(&mut self) -> Result<Vec<ProcIdentity>, String>;
+    /// Child PIDs of `pid`, readable or not.
+    fn children(&mut self, pid: u32) -> Vec<u32>;
     fn identity(&mut self, pid: u32) -> Option<ProcIdentity>;
     /// Current process name and executable path.
     fn names(&mut self, pid: u32) -> (String, String);
@@ -126,11 +171,17 @@ pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::R
     let (mut samples, mut failed) = (0u64, 0u64);
     let mut last_ok: Option<Duration> = None;
     let mut max_gap: Option<Duration> = None;
+    // Processes in scope that could not be read, each reported once.
+    let mut unreadable: HashSet<u32> = HashSet::new();
+    let scoped = tracker.is_some() || cfg.filter.is_some();
+    // Endpoints already reported as violations.
+    let mut violated: HashSet<Key> = HashSet::new();
+    let mut violations = 0u64;
 
     let reason = loop {
         let at = src.elapsed();
         match sample(src, tracker.as_mut(), cfg, &prev) {
-            Ok((changes, next)) => {
+            Ok((changes, next, gaps)) => {
                 samples += 1;
                 if let Some(before) = last_ok {
                     let gap = at.saturating_sub(before);
@@ -149,8 +200,34 @@ pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::R
                     writeln!(out, "{line}")?;
                     tracked.insert(identity.pid, names);
                 }
+                for pid in gaps {
+                    // An unscoped watch run without root cannot read most
+                    // system processes; it counts them rather than list
+                    // hundreds. A scoped watch names each one.
+                    if unreadable.insert(pid) && scoped {
+                        let names = src.names(pid);
+                        writeln!(out, "{}", unreadable_line(&stamp, pid, &names))?;
+                    }
+                }
                 for (kind, seen, start) in delta(&prev, &next, baseline) {
                     writeln!(out, "{}", endpoint_line(&stamp, kind, seen, start))?;
+                    let Some(policy) = &cfg.policy else {
+                        continue;
+                    };
+                    if kind == Kind::Closed {
+                        continue;
+                    }
+                    let key = (seen.endpoint.key.clone(), start);
+                    if violated.contains(&key) {
+                        continue;
+                    }
+                    // A state change is checked too: a socket can start
+                    // listening on a port it bound earlier.
+                    if let Some(breach) = policy.check(&seen.endpoint) {
+                        writeln!(out, "{}", violation_line(&stamp, breach, seen, start))?;
+                        violated.insert(key);
+                        violations += 1;
+                    }
                 }
                 prev = next;
                 for change in &changes {
@@ -166,7 +243,8 @@ pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::R
                     // to observe an action starts it after reading this.
                     baseline = false;
                     let processes = tracker.as_ref().map(Tracker::len);
-                    writeln!(out, "{}", baseline_line(&stamp, prev.len(), processes))?;
+                    let line = baseline_line(&stamp, prev.len(), processes, unreadable.len());
+                    writeln!(out, "{line}")?;
                 }
             }
             Err(message) => {
@@ -199,22 +277,52 @@ pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::R
     };
 
     let elapsed = src.elapsed().saturating_sub(began);
-    let line = end_line(
-        &timestamp(src.wall()),
+    let summary = Summary {
         reason,
         samples,
         failed,
-        max_gap,
-        elapsed,
-    );
+        unreadable: unreadable.len(),
+        violations,
+        verdict: None,
+    };
+    let gaps = incomplete_reasons(cfg, &summary);
+    let summary = Summary {
+        verdict: cfg.policy.as_ref().map(|_| {
+            if violations > 0 {
+                Verdict::Violation
+            } else if gaps.is_empty() {
+                Verdict::Pass
+            } else {
+                Verdict::Incomplete
+            }
+        }),
+        ..summary
+    };
+    let line = end_line(&timestamp(src.wall()), &summary, &gaps, max_gap, elapsed);
     writeln!(out, "{line}")?;
     out.flush()?;
-    Ok(Summary {
-        reason,
-        samples,
-        failed,
-    })
+    Ok(summary)
 }
+
+/// Why the watch did not see its whole scope for its whole duration.
+pub fn incomplete_reasons(cfg: &Config, summary: &Summary) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if summary.failed > 0 {
+        reasons.push("failed_samples");
+    }
+    if summary.unreadable > 0 {
+        reasons.push("unreadable_processes");
+    }
+    // Stopped before the time it was asked to cover.
+    if cfg.duration.is_some() && summary.reason == EndReason::Interrupted {
+        reasons.push("interrupted");
+    }
+    reasons
+}
+
+/// Process changes, the endpoints in scope, and the unreadable processes
+/// in scope, from one sample.
+type Observed = (Vec<Change>, HashMap<Key, Seen>, Vec<u32>);
 
 /// One sample: sockets first, then the process table, so a failure of
 /// either leaves the tracker untouched and the sample counts as failed.
@@ -223,8 +331,11 @@ fn sample<S: Source>(
     tracker: Option<&mut Tracker>,
     cfg: &Config,
     prev: &HashMap<Key, Seen>,
-) -> Result<(Vec<Change>, HashMap<Key, Seen>), String> {
-    let mut endpoints = src.endpoints()?;
+) -> Result<Observed, String> {
+    let Sample {
+        mut endpoints,
+        unreadable,
+    } = src.endpoints()?;
     // Peers are matched on the whole sample, before any narrowing: the
     // other end of a watched connection is usually outside the scope.
     let mut peers = local_peers(&endpoints);
@@ -251,6 +362,7 @@ fn sample<S: Source>(
     if let Some(filter) = &cfg.filter {
         endpoints.retain(|e| filter.matches(e));
     }
+    let gaps = gaps(src, tree, cfg.filter.as_ref(), unreadable);
 
     // A process can exit between the socket sample and its identity lookup.
     // Its endpoint keeps the start time it had last sample rather than
@@ -291,7 +403,51 @@ fn sample<S: Source>(
         next.entry((endpoint.key.clone(), start))
             .or_insert(Seen { endpoint, peer });
     }
-    Ok((changes, next))
+    Ok((changes, next, gaps))
+}
+
+/// The unreadable processes that fall inside the scope. In a tree, that
+/// is any descendant this user cannot read (a setuid program, or one
+/// started under another user), found by walking child lists from the
+/// members. Those descendants are never members: membership needs a
+/// readable start time. Their own children are walked too.
+fn gaps<S: Source>(
+    src: &mut S,
+    tree: Option<&Tracker>,
+    filter: Option<&Filter>,
+    unreadable: Vec<u32>,
+) -> Vec<u32> {
+    let unreadable: HashSet<u32> = unreadable.into_iter().collect();
+    let mut found: Vec<u32> = match tree {
+        None => unreadable.iter().copied().collect(),
+        Some(tree) => {
+            let mut found = HashSet::new();
+            let mut queue: Vec<u32> = tree.pids().collect();
+            while let Some(parent) = queue.pop() {
+                for child in src.children(parent) {
+                    if !tree.contains(child) && unreadable.contains(&child) && found.insert(child) {
+                        queue.push(child);
+                    }
+                }
+            }
+            found.into_iter().collect()
+        }
+    };
+    if let Some(filter) = filter {
+        found.retain(|&pid| match filter {
+            Filter::Pid(wanted) => pid == *wanted,
+            // The name of another user's process may not be readable; its
+            // executable path usually is.
+            Filter::Name(name) => {
+                let (process, path) = src.names(pid);
+                let base = path.rsplit('/').next().unwrap_or_default();
+                process.to_ascii_lowercase().contains(name)
+                    || base.to_ascii_lowercase().contains(name)
+            }
+        });
+    }
+    found.sort_unstable();
+    found
 }
 
 /// Events between two samples, in a stable order: by PID, protocol and
@@ -369,6 +525,13 @@ fn start_line(cfg: &Config, stamp: &str) -> String {
         .raw("duration_s", &duration)
         .raw("roots", &format!("[{}]", roots.join(",")))
         .raw("filter", &filter)
+        .raw(
+            "policy",
+            &match &cfg.policy {
+                Some(policy) => Json::object().number("rules", policy.len() as u64).finish(),
+                None => "null".into(),
+            },
+        )
         // Chosen by whoever started the process, not by this tool.
         .raw(
             "untrusted_fields",
@@ -434,30 +597,12 @@ fn endpoint_line(stamp: &str, kind: Kind, seen: &Seen, start: Option<ProcStart>)
         Kind::Changed(_) => "changed",
         Kind::Closed => "closed",
     };
-    let process = Json::object()
-        .number("pid", u64::from(e.key.pid))
-        .optional("start", start.map(start_stamp).as_deref())
-        .string("name", &e.process)
-        .string("path", &e.path)
-        .finish();
-    let address = |addr: std::net::SocketAddr| {
-        Json::object()
-            .string("ip", &numeric_ip(addr.ip()))
-            .number("port", u64::from(addr.port()))
-            .finish()
-    };
     let mut line = Json::object()
         .string("type", "endpoint")
         .string("ts", stamp)
         .string("event", event)
-        .raw("process", &process)
-        .string(
-            "proto",
-            match e.key.proto {
-                Proto::Tcp => "tcp",
-                Proto::Udp => "udp",
-            },
-        )
+        .raw("process", &process_json(e, start))
+        .string("proto", proto_str(e.key.proto))
         .number(
             "ip_version",
             match e.key.ip_ver {
@@ -474,18 +619,83 @@ fn endpoint_line(stamp: &str, kind: Kind, seen: &Seen, start: Option<ProcStart>)
                 Dir::Unknown => "unknown",
             },
         )
-        .raw("local", &address(e.key.local))
-        .raw("remote", &address(e.key.remote))
+        .raw("local", &address_json(e.key.local))
+        .raw("remote", &address_json(e.key.remote))
         .optional("state", e.state.map(TcpState::as_str));
     if let Kind::Changed(before) = kind {
         line = line.optional("prev_state", before.map(TcpState::as_str));
     }
     line.boolean("off_box", is_offbox(e.key.remote))
+        .optional("remote_class", netclass::remote_class(e).map(Class::as_str))
+        .string("local_class", netclass::class(e.key.local.ip()).as_str())
+        .boolean("exposed", netclass::exposure(e).is_some())
         .raw("peer", &peer_json(seen.peer.as_ref()))
         .finish()
 }
 
-fn baseline_line(stamp: &str, endpoints: usize, processes: Option<usize>) -> String {
+fn process_json(e: &Endpoint, start: Option<ProcStart>) -> String {
+    Json::object()
+        .number("pid", u64::from(e.key.pid))
+        .optional("start", start.map(start_stamp).as_deref())
+        .string("name", &e.process)
+        .string("path", &e.path)
+        .finish()
+}
+
+fn address_json(addr: std::net::SocketAddr) -> String {
+    Json::object()
+        .string("ip", &numeric_ip(addr.ip()))
+        .number("port", u64::from(addr.port()))
+        .finish()
+}
+
+fn proto_str(proto: Proto) -> &'static str {
+    match proto {
+        Proto::Tcp => "tcp",
+        Proto::Udp => "udp",
+    }
+}
+
+/// An endpoint no policy rule permits, written once per endpoint, right
+/// after the record that reported it.
+fn violation_line(stamp: &str, breach: Breach, seen: &Seen, start: Option<ProcStart>) -> String {
+    let e = &seen.endpoint;
+    Json::object()
+        .string("type", "violation")
+        .string("ts", stamp)
+        .string("breach", breach.as_str())
+        .raw("process", &process_json(e, start))
+        .string("proto", proto_str(e.key.proto))
+        .raw("local", &address_json(e.key.local))
+        .raw("remote", &address_json(e.key.remote))
+        .optional("state", e.state.map(TcpState::as_str))
+        .optional("remote_class", netclass::remote_class(e).map(Class::as_str))
+        .string("local_class", netclass::class(e.key.local.ip()).as_str())
+        .finish()
+}
+
+/// A process in scope whose sockets this user cannot read. Its endpoints
+/// are missing from the stream from here on.
+fn unreadable_line(stamp: &str, pid: u32, names: &(String, String)) -> String {
+    let process = Json::object()
+        .number("pid", u64::from(pid))
+        .string("name", &names.0)
+        .string("path", &names.1)
+        .finish();
+    Json::object()
+        .string("type", "process")
+        .string("ts", stamp)
+        .string("event", "unreadable")
+        .raw("process", &process)
+        .finish()
+}
+
+fn baseline_line(
+    stamp: &str,
+    endpoints: usize,
+    processes: Option<usize>,
+    unreadable: usize,
+) -> String {
     let processes = match processes {
         Some(count) => count.to_string(),
         None => "null".into(),
@@ -496,6 +706,7 @@ fn baseline_line(stamp: &str, endpoints: usize, processes: Option<usize>) -> Str
         .number("endpoints", endpoints as u64)
         // Tracked processes when the watch is scoped to a tree.
         .raw("processes", &processes)
+        .number("unreadable_processes", unreadable as u64)
         .finish()
 }
 
@@ -509,9 +720,8 @@ fn error_line(stamp: &str, message: &str) -> String {
 
 fn end_line(
     stamp: &str,
-    reason: EndReason,
-    samples: u64,
-    failed: u64,
+    summary: &Summary,
+    incomplete: &[&str],
     max_gap: Option<Duration>,
     elapsed: Duration,
 ) -> String {
@@ -519,14 +729,29 @@ fn end_line(
         Some(gap) => millis(gap).to_string(),
         None => "null".into(),
     };
+    let policy = match summary.verdict {
+        None => "null".to_string(),
+        Some(verdict) => {
+            let reasons: Vec<String> = incomplete.iter().map(|r| json_string(r)).collect();
+            Json::object()
+                .string("verdict", verdict.as_str())
+                .number("violations", summary.violations)
+                // Every reason the scope went partly unseen, even when a
+                // violation decided the verdict.
+                .raw("incomplete", &format!("[{}]", reasons.join(",")))
+                .finish()
+        }
+    };
     Json::object()
         .string("type", "end")
         .string("ts", stamp)
-        .string("reason", reason.as_str())
-        .number("samples", samples)
-        .number("failed_samples", failed)
+        .string("reason", summary.reason.as_str())
+        .number("samples", summary.samples)
+        .number("failed_samples", summary.failed)
         .raw("max_gap_ms", &gap)
         .number("elapsed_ms", millis(elapsed))
+        .number("unreadable_processes", summary.unreadable as u64)
+        .raw("policy", &policy)
         .finish()
 }
 
@@ -688,10 +913,10 @@ impl Default for Live {
 }
 
 impl Source for Live {
-    fn endpoints(&mut self) -> Result<Vec<Endpoint>, String> {
+    fn endpoints(&mut self) -> Result<Sample, String> {
         // A panic in the collector must not end a long watch; the sample
         // is reported as failed instead.
-        match std::panic::catch_unwind(snapshot) {
+        match std::panic::catch_unwind(crate::snapshot::sample) {
             Ok(result) => result.map_err(|e| e.0),
             Err(_) => Err("socket snapshot panicked".into()),
         }
@@ -699,6 +924,10 @@ impl Source for Live {
 
     fn processes(&mut self) -> Result<Vec<ProcIdentity>, String> {
         procinfo::table()
+    }
+
+    fn children(&mut self, pid: u32) -> Vec<u32> {
+        procinfo::children(pid)
     }
 
     fn identity(&mut self, pid: u32) -> Option<ProcIdentity> {
@@ -772,12 +1001,14 @@ mod tests {
     struct Tick {
         endpoints: Result<Vec<Endpoint>, String>,
         processes: Result<Vec<ProcIdentity>, String>,
+        unreadable: Vec<u32>,
     }
 
     fn tick(endpoints: Vec<Endpoint>, processes: Vec<ProcIdentity>) -> Tick {
         Tick {
             endpoints: Ok(endpoints),
             processes: Ok(processes),
+            unreadable: Vec::new(),
         }
     }
 
@@ -789,6 +1020,7 @@ mod tests {
         sample_cost: Duration,
         stop_at: Option<Duration>,
         unknown: Vec<u32>,
+        children: HashMap<u32, Vec<u32>>,
         waits: Vec<Duration>,
     }
 
@@ -801,6 +1033,7 @@ mod tests {
                 sample_cost: Duration::ZERO,
                 stop_at: None,
                 unknown: Vec::new(),
+                children: HashMap::new(),
                 waits: Vec::new(),
             }
         }
@@ -811,14 +1044,22 @@ mod tests {
     }
 
     impl Source for Fake {
-        fn endpoints(&mut self) -> Result<Vec<Endpoint>, String> {
+        fn endpoints(&mut self) -> Result<Sample, String> {
             self.taken += 1;
             self.clock += self.sample_cost;
-            self.current().endpoints.clone()
+            let tick = self.current();
+            tick.endpoints.clone().map(|endpoints| Sample {
+                endpoints,
+                unreadable: tick.unreadable.clone(),
+            })
         }
 
         fn processes(&mut self) -> Result<Vec<ProcIdentity>, String> {
             self.current().processes.clone()
+        }
+
+        fn children(&mut self, pid: u32) -> Vec<u32> {
+            self.children.get(&pid).cloned().unwrap_or_default()
         }
 
         fn identity(&mut self, pid: u32) -> Option<ProcIdentity> {
@@ -853,6 +1094,7 @@ mod tests {
             duration: duration_s.map(Duration::from_secs),
             roots: Vec::new(),
             filter: None,
+            policy: None,
         }
     }
 
@@ -919,15 +1161,15 @@ mod tests {
                 format!(
                     "{{\"type\":\"start\",\"schema\":\"netboard.watch/1\",\"version\":\"{}\",\
                      \"ts\":\"2023-11-14T22:13:20.000Z\",\"interval_ms\":1000,\"duration_s\":2,\
-                     \"roots\":[],\"filter\":null,\
+                     \"roots\":[],\"filter\":null,\"policy\":null,\
                      \"untrusted_fields\":[\"process.name\",\"process.path\",\
                      \"peer.processes.name\",\"peer.processes.path\"]}}",
                     env!("CARGO_PKG_VERSION")
                 ),
-                "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":0,\"processes\":null}"
+                "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":0,\"processes\":null,\"unreadable_processes\":0}"
                     .to_string(),
                 "{\"type\":\"end\",\"ts\":\"2023-11-14T22:13:22.000Z\",\"reason\":\"duration\",\
-                 \"samples\":3,\"failed_samples\":0,\"max_gap_ms\":1000,\"elapsed_ms\":2000}"
+                 \"samples\":3,\"failed_samples\":0,\"max_gap_ms\":1000,\"elapsed_ms\":2000,\"unreadable_processes\":0,\"policy\":null}"
                     .to_string(),
             ]
         );
@@ -936,7 +1178,10 @@ mod tests {
             Summary {
                 reason: EndReason::Duration,
                 samples: 3,
-                failed: 0
+                failed: 0,
+                unreadable: 0,
+                violations: 0,
+                verdict: None,
             }
         );
         assert_eq!(src.waits, [Duration::from_secs(1); 2]);
@@ -976,33 +1221,33 @@ mod tests {
                  \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
                  \"remote\":{\"ip\":\"127.0.0.1\",\"port\":80},\"state\":\"ESTABLISHED\",\
-                 \"off_box\":false,\"peer\":null}",
+                 \"off_box\":false,\"remote_class\":\"loopback\",\"local_class\":\"loopback\",\"exposed\":false,\"peer\":null}",
                 "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":1,\
-                 \"processes\":null}",
+                 \"processes\":null,\"unreadable_processes\":0}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:21.000Z\",\"event\":\"new\",\
                  \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
                  \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
                  \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"SYN_SENT\",\
-                 \"off_box\":true,\"peer\":null}",
+                 \"off_box\":true,\"remote_class\":\"other\",\"local_class\":\"loopback\",\"exposed\":false,\"peer\":null}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:22.000Z\",\"event\":\"changed\",\
                  \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
                  \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
                  \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"ESTABLISHED\",\
-                 \"prev_state\":\"SYN_SENT\",\"off_box\":true,\"peer\":null}",
+                 \"prev_state\":\"SYN_SENT\",\"off_box\":true,\"remote_class\":\"other\",\"local_class\":\"loopback\",\"exposed\":false,\"peer\":null}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:23.000Z\",\"event\":\"closed\",\
                  \"process\":{\"pid\":7,\"start\":\"2023-11-14T22:11:47.000005Z\",\"name\":\"proc7\",\
                  \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
                  \"remote\":{\"ip\":\"127.0.0.1\",\"port\":80},\"state\":\"ESTABLISHED\",\
-                 \"off_box\":false,\"peer\":null}",
+                 \"off_box\":false,\"remote_class\":\"loopback\",\"local_class\":\"loopback\",\"exposed\":false,\"peer\":null}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:23.000Z\",\"event\":\"closed\",\
                  \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
                  \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
                  \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"ESTABLISHED\",\
-                 \"off_box\":true,\"peer\":null}",
+                 \"off_box\":true,\"remote_class\":\"other\",\"local_class\":\"loopback\",\"exposed\":false,\"peer\":null}",
             ]
         );
     }
@@ -1025,7 +1270,7 @@ mod tests {
              \"process\":{\"pid\":3,\"start\":null,\"name\":\"proc3\",\"path\":\"/bin/proc3\"},\
              \"proto\":\"udp\",\"ip_version\":6,\"dir\":\"unknown\",\
              \"local\":{\"ip\":\"::\",\"port\":5353},\"remote\":{\"ip\":\"::\",\"port\":0},\
-             \"state\":null,\"off_box\":false,\"peer\":null}"
+             \"state\":null,\"off_box\":false,\"remote_class\":null,\"local_class\":\"wildcard\",\"exposed\":true,\"peer\":null}"
         );
     }
 
@@ -1067,11 +1312,14 @@ mod tests {
         // Identity is readable for the first sample only.
         struct Fading(Fake);
         impl Source for Fading {
-            fn endpoints(&mut self) -> Result<Vec<Endpoint>, String> {
+            fn endpoints(&mut self) -> Result<Sample, String> {
                 self.0.endpoints()
             }
             fn processes(&mut self) -> Result<Vec<ProcIdentity>, String> {
                 self.0.processes()
+            }
+            fn children(&mut self, pid: u32) -> Vec<u32> {
+                self.0.children(pid)
             }
             fn identity(&mut self, pid: u32) -> Option<ProcIdentity> {
                 (self.0.taken == 1).then(|| proc(pid, 1))
@@ -1159,7 +1407,7 @@ mod tests {
         assert_eq!(
             lines[2],
             "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":0,\
-             \"processes\":1}"
+             \"processes\":1,\"unreadable_processes\":0}"
         );
         assert!(lines[3].contains("\"reason\":\"descendant\""));
         assert!(lines[3].contains("\"ppid\":100"));
@@ -1204,7 +1452,7 @@ mod tests {
              \"name\":\"proc100\",\"path\":\"/bin/proc100\"},\"proto\":\"tcp\",\"ip_version\":4,\
              \"dir\":\"out\",\"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
              \"remote\":{\"ip\":\"127.0.0.1\",\"port\":11434},\"state\":\"ESTABLISHED\",\
-             \"off_box\":false,\"peer\":{\"via\":\"listener\",\"process_count\":1,\
+             \"off_box\":false,\"remote_class\":\"loopback\",\"local_class\":\"loopback\",\"exposed\":false,\"peer\":{\"via\":\"listener\",\"process_count\":1,\
              \"processes\":[{\"pid\":900,\"start\":\"2023-11-14T22:26:40.000005Z\",\
              \"name\":\"proc900\",\"path\":\"/bin/proc900\",\"in_scope\":false}]}}"
         );
@@ -1273,6 +1521,7 @@ mod tests {
             Tick {
                 endpoints: Err("libproc sockets: \"denied\"".into()),
                 processes: Ok(vec![]),
+                unreadable: vec![],
             },
             tick(vec![a.clone()], vec![]),
         ]);
@@ -1297,6 +1546,7 @@ mod tests {
             Tick {
                 endpoints: Ok(vec![]),
                 processes: Err("libproc could not list processes".into()),
+                unreadable: vec![],
             },
             tick(vec![], vec![root]),
             tick(vec![], vec![]),
@@ -1325,7 +1575,7 @@ mod tests {
         assert_eq!(
             lines[2],
             "{\"type\":\"end\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"reason\":\"interrupted\",\
-             \"samples\":1,\"failed_samples\":0,\"max_gap_ms\":null,\"elapsed_ms\":0}"
+             \"samples\":1,\"failed_samples\":0,\"max_gap_ms\":null,\"elapsed_ms\":0,\"unreadable_processes\":0,\"policy\":null}"
         );
     }
 
@@ -1369,5 +1619,228 @@ mod tests {
         let err = run(&config(1000, None), &mut src, &mut Closed).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
         assert_eq!(src.taken, 0, "no sample after the reader went away");
+    }
+
+    fn listen(pid: u32, local: &str) -> Endpoint {
+        let mut e = tcp(pid, 0, "0.0.0.0:0", TcpState::Listen);
+        e.key.local = local.parse().unwrap();
+        e.dir = Dir::Listen;
+        e
+    }
+
+    fn lines_of<'a>(lines: &'a [String], kind: &str) -> Vec<&'a String> {
+        lines
+            .iter()
+            .filter(|line| line.starts_with(&format!("{{\"type\":\"{kind}\"")))
+            .collect()
+    }
+
+    #[test]
+    fn endpoint_records_carry_address_classes_and_exposure() {
+        let mut udp = tcp(5, 0, "0.0.0.0:0", TcpState::Closed);
+        udp.key.proto = Proto::Udp;
+        udp.key.local = "0.0.0.0:5353".parse().unwrap();
+        udp.state = None;
+        let mut lan = tcp(6, 5001, "192.168.1.20:8080", TcpState::Established);
+        lan.key.local = "192.168.1.5:5001".parse().unwrap();
+        let eps = vec![
+            listen(3, "127.0.0.1:11434"),
+            listen(4, "0.0.0.0:22"),
+            udp,
+            lan,
+            tcp(7, 5002, "8.8.8.8:443", TcpState::Established),
+        ];
+        let (_, lines) = watch(
+            &config(1000, Some(1)),
+            &mut Fake::new(vec![tick(eps, vec![])]),
+        );
+        let classes: Vec<String> = lines_of(&lines, "endpoint")
+            .iter()
+            .map(|line| {
+                let (_, tail) = line.split_once("\"off_box\":").unwrap();
+                tail.split(",\"peer\"").next().unwrap().to_string()
+            })
+            .collect();
+        assert_eq!(
+            classes,
+            [
+                "false,\"remote_class\":null,\"local_class\":\"loopback\",\"exposed\":false",
+                "false,\"remote_class\":null,\"local_class\":\"wildcard\",\"exposed\":true",
+                "false,\"remote_class\":null,\"local_class\":\"wildcard\",\"exposed\":true",
+                "true,\"remote_class\":\"lan\",\"local_class\":\"lan\",\"exposed\":false",
+                "true,\"remote_class\":\"public\",\"local_class\":\"loopback\",\"exposed\":false",
+            ]
+        );
+    }
+
+    #[test]
+    fn unreadable_processes_are_counted_and_named_only_when_scoped() {
+        let mut first = tick(vec![], vec![]);
+        first.unreadable = vec![50, 60];
+        let mut second = tick(vec![], vec![]);
+        second.unreadable = vec![60, 70];
+        // Unscoped: counted, not listed.
+        let mut src = Fake::new(vec![first, second]);
+        let (summary, lines) = watch(&config(1000, Some(1)), &mut src);
+        assert_eq!(summary.unreadable, 3);
+        assert!(lines_of(&lines, "process").is_empty(), "{lines:#?}");
+        assert!(lines_of(&lines, "baseline")[0].ends_with("\"unreadable_processes\":2}"));
+        assert!(lines_of(&lines, "end")[0].contains("\"unreadable_processes\":3,\"policy\":null}"));
+        // No policy, no verdict: the counts are information only.
+        assert_eq!(summary.verdict, None);
+
+        // A PID filter names the one it is about.
+        let mut gap = tick(vec![], vec![]);
+        gap.unreadable = vec![50, 60];
+        let mut cfg = config(1000, Some(1));
+        cfg.filter = Some(Filter::Pid(60));
+        let (summary, lines) = watch(&cfg, &mut Fake::new(vec![gap]));
+        assert_eq!(summary.unreadable, 1);
+        assert_eq!(
+            lines_of(&lines, "process"),
+            ["{\"type\":\"process\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"event\":\"unreadable\",\
+              \"process\":{\"pid\":60,\"name\":\"proc60\",\"path\":\"/bin/proc60\"}}"]
+        );
+    }
+
+    #[test]
+    fn a_tree_counts_descendants_it_cannot_read_through_child_lists() {
+        let root = proc(100, 1);
+        // 100 runs 300 (setuid, unreadable), which runs 301 (also unreadable).
+        // 900 is unreadable but nobody in the tree started it.
+        let mut sample = tick(vec![], vec![root]);
+        sample.unreadable = vec![300, 301, 900];
+        let mut src = Fake::new(vec![sample]);
+        src.children = HashMap::from([(100, vec![300]), (300, vec![301]), (1, vec![100, 900])]);
+        let mut cfg = config(1000, Some(1));
+        cfg.roots = vec![root];
+        let (summary, lines) = watch(&cfg, &mut src);
+        assert_eq!(summary.unreadable, 2);
+        let named: Vec<&str> = lines_of(&lines, "process")
+            .iter()
+            .filter(|line| line.contains("\"event\":\"unreadable\""))
+            .map(|line| {
+                line.split("\"pid\":")
+                    .nth(1)
+                    .unwrap()
+                    .split(',')
+                    .next()
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(named, ["300", "301"]);
+    }
+
+    fn policy(rules: &str) -> Option<Policy> {
+        Some(Policy::parse(&format!("netboard-policy 1\n{rules}")).unwrap())
+    }
+
+    #[test]
+    fn a_policy_reports_each_violation_once_and_ends_with_a_verdict() {
+        let ok = tcp(7, 5000, "127.0.0.1:11434", TcpState::Established);
+        let bad = tcp(7, 5001, "8.8.8.8:443", TcpState::SynSent);
+        let mut bad_up = bad.clone();
+        bad_up.state = Some(TcpState::Established);
+        let mut src = Fake::new(vec![
+            tick(vec![ok.clone(), listen(7, "127.0.0.1:8080")], vec![]),
+            tick(vec![ok.clone(), bad.clone()], vec![]),
+            tick(vec![ok.clone(), bad_up], vec![]),
+            tick(vec![ok.clone(), listen(7, "0.0.0.0:8081")], vec![]),
+        ]);
+        let mut cfg = config(1000, Some(3));
+        cfg.policy = policy("allow loopback proto tcp port 11434\nlisten loopback\n");
+        let (summary, lines) = watch(&cfg, &mut src);
+        assert!(
+            lines[0].contains("\"policy\":{\"rules\":2}"),
+            "{}",
+            lines[0]
+        );
+        let violations = lines_of(&lines, "violation");
+        assert_eq!(
+            violations,
+            [
+                "{\"type\":\"violation\",\"ts\":\"2023-11-14T22:13:21.000Z\",\"breach\":\"connection\",\
+                 \"process\":{\"pid\":7,\"start\":\"2023-11-14T22:11:47.000005Z\",\"name\":\"proc7\",\
+                 \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\
+                 \"local\":{\"ip\":\"127.0.0.1\",\"port\":5001},\
+                 \"remote\":{\"ip\":\"8.8.8.8\",\"port\":443},\"state\":\"SYN_SENT\",\
+                 \"remote_class\":\"public\",\"local_class\":\"loopback\"}",
+                "{\"type\":\"violation\",\"ts\":\"2023-11-14T22:13:23.000Z\",\"breach\":\"listener\",\
+                 \"process\":{\"pid\":7,\"start\":\"2023-11-14T22:11:47.000005Z\",\"name\":\"proc7\",\
+                 \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\
+                 \"local\":{\"ip\":\"0.0.0.0\",\"port\":8081},\
+                 \"remote\":{\"ip\":\"0.0.0.0\",\"port\":0},\"state\":\"LISTEN\",\
+                 \"remote_class\":null,\"local_class\":\"wildcard\"}",
+            ]
+        );
+        // Each violation follows the endpoint record that reported it.
+        let at = lines.iter().position(|l| l == violations[0]).unwrap();
+        assert!(lines[at - 1].contains("\"event\":\"new\""));
+        assert_eq!(summary.violations, 2);
+        assert_eq!(summary.verdict, Some(Verdict::Violation));
+        assert!(lines.last().unwrap().ends_with(
+            "\"policy\":{\"verdict\":\"violation\",\"violations\":2,\"incomplete\":[]}}"
+        ));
+    }
+
+    #[test]
+    fn a_verdict_is_pass_only_when_the_whole_scope_was_seen() {
+        let ok = tcp(7, 5000, "127.0.0.1:11434", TcpState::Established);
+        let rules = "allow loopback\n";
+        let verdict = |src: &mut Fake, duration: Option<u64>| {
+            let mut cfg = config(1000, duration);
+            cfg.policy = policy(rules);
+            let (summary, lines) = watch(&cfg, src);
+            let end = lines.last().unwrap().clone();
+            (summary.verdict.unwrap(), end)
+        };
+
+        let (seen, end) = verdict(
+            &mut Fake::new(vec![tick(vec![ok.clone()], vec![])]),
+            Some(1),
+        );
+        assert_eq!(seen, Verdict::Pass);
+        assert!(
+            end.ends_with("\"policy\":{\"verdict\":\"pass\",\"violations\":0,\"incomplete\":[]}}")
+        );
+
+        let mut gap = tick(vec![ok.clone()], vec![]);
+        gap.unreadable = vec![40];
+        let failed = Tick {
+            endpoints: Err("libproc could not list processes".into()),
+            processes: Ok(vec![]),
+            unreadable: vec![],
+        };
+        let (seen, end) = verdict(&mut Fake::new(vec![gap, failed]), Some(1));
+        assert_eq!(seen, Verdict::Incomplete);
+        assert!(end.contains(
+            "\"verdict\":\"incomplete\",\"violations\":0,\
+             \"incomplete\":[\"failed_samples\",\"unreadable_processes\"]"
+        ));
+
+        // Stopped before the requested time: incomplete. Without a
+        // requested time, a stop is how a watch normally ends.
+        let mut src = Fake::new(vec![tick(vec![ok.clone()], vec![])]);
+        src.stop_at = Some(Duration::from_millis(500));
+        let (seen, end) = verdict(&mut src, Some(5));
+        assert_eq!(seen, Verdict::Incomplete);
+        assert!(end.contains("\"incomplete\":[\"interrupted\"]"));
+        let mut src = Fake::new(vec![tick(vec![ok.clone()], vec![])]);
+        src.stop_at = Some(Duration::from_millis(500));
+        assert_eq!(verdict(&mut src, None).0, Verdict::Pass);
+
+        // A violation outranks every gap, which is still listed.
+        let mut both = tick(
+            vec![tcp(7, 5001, "8.8.8.8:443", TcpState::Established)],
+            vec![],
+        );
+        both.unreadable = vec![40];
+        let (seen, end) = verdict(&mut Fake::new(vec![both]), Some(1));
+        assert_eq!(seen, Verdict::Violation);
+        assert!(end.contains("\"violations\":1,\"incomplete\":[\"unreadable_processes\"]"));
+        assert_eq!(
+            [Verdict::Pass, Verdict::Violation, Verdict::Incomplete].map(Verdict::exit_code),
+            [0, 1, 2]
+        );
     }
 }

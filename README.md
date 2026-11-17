@@ -40,6 +40,13 @@ Synthetic data, documentation IP ranges only.*
 - Names the local process on the other end of a connection to this Mac, so
   traffic to `127.0.0.1` shows which proxy, model server or daemon receives
   it (`--peers`, and always in a watch).
+- Classes each address as loopback, LAN, public, multicast or other, and
+  flags an *exposed* listener: one bound to `0.0.0.0`, `::` or a network
+  address, which another machine can reach (`--class`, and always in a
+  watch). **Off-box only** keeps exposed listeners.
+- Checks a watch against a policy file you write and exits 0 (no violation
+  seen), 1 (violation) or 2 (incomplete), the same codes as yara-gate. See
+  [Policy](docs/POLICY.md).
 
 See [Direction](docs/DESIGN.md#direction). Refresh,
 deletion, and address rules: [Design](docs/DESIGN.md).
@@ -52,15 +59,17 @@ deletion, and address rules: [Design](docs/DESIGN.md).
 | Blue | New incoming endpoint or new LISTEN |
 | Yellow | Same 4-tuple, TCP state changed |
 | Red | Endpoint gone (two refresh ticks, then drop) |
-| Orange | Stable TCP/UDP to an off-box peer (not loopback, not `*`) |
+| Orange | Stable TCP/UDP to an off-box peer (not loopback, not `*`), or an exposed listener |
 
-Turn on **Off-box only** when watching CyClaw telemetry-kill. Event colors still win over orange.
+Turn on **Off-box only** when watching CyClaw telemetry-kill. It shows
+traffic leaving the Mac and listeners another machine can reach, and hides
+loopback. The status bar counts both. Event colors still win over orange.
 
 ## Screenshots
 
 | | |
 | --- | --- |
-| ![Off-box only view listing just the connections that leave the Mac](screenshots/offbox-only.png) | **Off-box only** hides listeners, loopback, and wildcard sockets, leaving only traffic that leaves the Mac. That's what you watch for a telemetry kill. |
+| ![Off-box only view listing just the connections that leave the Mac](screenshots/offbox-only.png) | **Off-box only** hides loopback, leaving traffic that leaves the Mac and listeners another machine can reach. That's what you watch for a telemetry kill. This capture predates exposed listeners, so it shows none. |
 | ![Light theme filtered to cyclaw](screenshots/filter-light.png) | **Filter** matches process, PID, host, port, state, or path. The status bar counts what the filter hides. Light and dark follow macOS. |
 | ![Terminate confirmation dialog](screenshots/terminate-confirm.png) | **Terminate** always asks first. It sends SIGTERM to the whole process, and only if the PID still belongs to the process you confirmed. |
 
@@ -86,8 +95,8 @@ CLI uses step 1 only, and `-n` skips DNS entirely.
 ## CLI
 
 ```text
-netboard --cli [-a] [-c] [-n] [process|pid]
-netboard --cli --watch [--interval MS] [--for SECONDS] [process|pid]
+netboard --cli [-a] [-c] [-n] [--class] [--peers] [process|pid]
+netboard --cli --watch [--interval MS] [--for SECONDS] [--policy FILE] [process|pid]
 ```
 
 | Flag | Effect |
@@ -99,10 +108,12 @@ netboard --cli --watch [--interval MS] [--for SECONDS] [process|pid]
 | `-n` | Numeric addresses, no reverse DNS |
 | `process` or `pid` | Optional filter |
 | `--tree PID` | Only this process and its descendants. Repeat for up to 16 roots. Works with a snapshot or a watch |
+| `--class` | Add a `Class` column: the peer's class (`loopback`, `lan`, `public`, `multicast`, `other`), `exposed-<bind>` for a listener another machine can reach, or `local-only`. Comes before `Peer`. Always on with `--watch` |
 | `--peers` | Add a `Peer` column: the local process holding the other end, as `name[pid]`. Always on with `--watch` |
 | `--watch` | Keep sampling and write JSON Lines events. Selects the CLI by itself |
 | `--interval MS` | Time between watch samples, 50 to 60000 (default 1000) |
 | `--for SECONDS` | End the watch after this long, 1 to 86400 |
+| `--policy FILE` | Check the watch against `allow` and `listen` rules and exit with the verdict. Needs `--watch`. See [Policy](docs/POLICY.md) |
 
 ### Watch mode
 
@@ -119,12 +130,12 @@ wait for the `baseline` record, then launch
 Each line is one JSON object:
 
 ```json
-{"type":"start","schema":"netboard.watch/1","version":"0.1.3","ts":"2026-11-17T03:04:05.000Z","interval_ms":1000,"duration_s":null,"roots":[{"pid":2108,"start":"2026-11-17T03:04:04.512345Z"}],"filter":null,"untrusted_fields":["process.name","process.path","peer.processes.name","peer.processes.path"]}
+{"type":"start","schema":"netboard.watch/1","version":"0.1.3","ts":"2026-11-17T03:04:05.000Z","interval_ms":1000,"duration_s":null,"roots":[{"pid":2108,"start":"2026-11-17T03:04:04.512345Z"}],"filter":null,"policy":null,"untrusted_fields":["process.name","process.path","peer.processes.name","peer.processes.path"]}
 {"type":"process","ts":"2026-11-17T03:04:05.003Z","event":"tracked","reason":"root","process":{"pid":2108,"ppid":611,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"}}
-{"type":"baseline","ts":"2026-11-17T03:04:05.003Z","endpoints":0,"processes":1}
-{"type":"endpoint","ts":"2026-11-17T03:04:07.004Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"192.0.2.10","port":54321},"remote":{"ip":"198.51.100.7","port":443},"state":"ESTABLISHED","off_box":true,"peer":null}
-{"type":"endpoint","ts":"2026-11-17T03:04:08.005Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"127.0.0.1","port":54400},"remote":{"ip":"127.0.0.1","port":11434},"state":"ESTABLISHED","off_box":false,"peer":{"via":"connection","process_count":1,"processes":[{"pid":812,"start":"2026-11-17T02:58:11.004200Z","name":"ollama","path":"/usr/local/bin/ollama","in_scope":false}]}}
-{"type":"end","ts":"2026-11-17T03:04:09.006Z","reason":"scope_exited","samples":5,"failed_samples":0,"max_gap_ms":1001,"elapsed_ms":4003}
+{"type":"baseline","ts":"2026-11-17T03:04:05.003Z","endpoints":0,"processes":1,"unreadable_processes":0}
+{"type":"endpoint","ts":"2026-11-17T03:04:07.004Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"192.0.2.10","port":54321},"remote":{"ip":"198.51.100.7","port":443},"state":"ESTABLISHED","off_box":true,"remote_class":"other","local_class":"other","exposed":false,"peer":null}
+{"type":"endpoint","ts":"2026-11-17T03:04:08.005Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"127.0.0.1","port":54400},"remote":{"ip":"127.0.0.1","port":11434},"state":"ESTABLISHED","off_box":false,"remote_class":"loopback","local_class":"loopback","exposed":false,"peer":{"via":"connection","process_count":1,"processes":[{"pid":812,"start":"2026-11-17T02:58:11.004200Z","name":"ollama","path":"/usr/local/bin/ollama","in_scope":false}]}}
+{"type":"end","ts":"2026-11-17T03:04:09.006Z","reason":"scope_exited","samples":5,"failed_samples":0,"max_gap_ms":1001,"elapsed_ms":4003,"unreadable_processes":0,"policy":null}
 ```
 
 - Endpoint events are `existing` (already open at the first sample), `new`,
@@ -138,12 +149,23 @@ Each line is one JSON object:
 - With `--tree`, a child stays tracked after its parent exits and launchd
   adopts it. A process is the PID plus its kernel start time, so a reused
   PID is never mistaken for the old process.
+- `remote_class`, `local_class` and `exposed` say where an endpoint reaches.
+  The example's addresses are documentation ranges, so their class is
+  `other`; a real public peer is `public`.
+- Processes this user cannot read (another user's, unless you run as root)
+  are counted in `unreadable_processes`: their sockets are missing, not
+  absent. A `--tree` watch also counts descendants it cannot read, such as
+  a command run through `sudo`.
 - Watch output is every endpoint, always numeric. It never resolves a name
   and never sends anything.
 - The watch ends on `--for`, on Ctrl-C or SIGTERM, or when every tracked
   process has exited, and still writes its `end` record.
-- Exit 0 means every sample succeeded. Exit 2 is a usage error, a `--tree`
-  PID that could not be identified, a failed sample, or a failed write.
+- Without `--policy`, exit 0 means every sample succeeded. Exit 2 is a
+  usage error, a `--tree` PID that could not be identified, a failed sample,
+  or a failed write.
+- With `--policy`, the exit code is the [verdict](docs/POLICY.md): 0 no
+  violation seen, 1 violation, 2 incomplete. Each endpoint that breaks a
+  rule gets one `violation` record.
 
 A watch reports what it sampled. A socket that opens and closes between two
 samples is never seen, so an empty stream is not proof that nothing was
@@ -239,6 +261,7 @@ CSV, watch output): [SECURITY.md](SECURITY.md).
 ## Docs
 
 - [Design](docs/DESIGN.md)
+- [Policy and verdict](docs/POLICY.md)
 - [Security](SECURITY.md)
 - [Build](docs/BUILD.md)
 - [Controls](docs/CONTROLS.md)

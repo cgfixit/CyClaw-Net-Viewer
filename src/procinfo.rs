@@ -27,6 +27,24 @@ pub struct ProcIdentity {
 /// its parent has not reaped yet (a zombie) still answers this call; it
 /// holds no sockets and counts as exited.
 pub fn identity(pid: u32) -> Option<ProcIdentity> {
+    let info = bsd_info(pid)?;
+    (info.pbi_pid == pid && info.pbi_status != libc::SZOMB).then_some(ProcIdentity {
+        pid,
+        ppid: info.pbi_ppid,
+        start: ProcStart {
+            sec: info.pbi_start_tvsec,
+            usec: info.pbi_start_tvusec,
+        },
+    })
+}
+
+/// True only when this user can read `pid` and it is an exited process its
+/// parent has not reaped. A zombie holds no descriptors.
+pub fn is_zombie(pid: u32) -> bool {
+    bsd_info(pid).is_some_and(|info| info.pbi_pid == pid && info.pbi_status == libc::SZOMB)
+}
+
+fn bsd_info(pid: u32) -> Option<libc::proc_bsdinfo> {
     let target = libc::pid_t::try_from(pid).ok().filter(|p| *p > 0)?;
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::zeroed();
     let size = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
@@ -41,20 +59,12 @@ pub fn identity(pid: u32) -> Option<ProcIdentity> {
             size,
         )
     };
-    // A short or failed read leaves no identity to trust.
+    // A short or failed read leaves nothing to trust.
     if written != size {
         return None;
     }
     // SAFETY: the storage was zeroed, then fully written by libproc.
-    let info = unsafe { info.assume_init() };
-    (info.pbi_pid == pid && info.pbi_status != libc::SZOMB).then_some(ProcIdentity {
-        pid,
-        ppid: info.pbi_ppid,
-        start: ProcStart {
-            sec: info.pbi_start_tvsec,
-            usec: info.pbi_start_tvusec,
-        },
-    })
+    Some(unsafe { info.assume_init() })
 }
 
 /// Every PID the kernel lists right now. Processes can start between the
@@ -89,6 +99,43 @@ pub fn pids() -> Result<Vec<u32>, String> {
         headroom *= 4;
     }
     Err("process list kept growing while it was read".into())
+}
+
+/// PIDs whose parent is `ppid`, whoever owns them. Listing needs no
+/// permission over the processes listed, so this sees children this user
+/// cannot otherwise read, such as a setuid program a watched process ran.
+pub fn children(ppid: u32) -> Vec<u32> {
+    let Ok(parent) = libc::pid_t::try_from(ppid) else {
+        return Vec::new();
+    };
+    let mut headroom = 16usize;
+    for _ in 0..4 {
+        // SAFETY: a null buffer of size zero only asks for the PID count.
+        let estimate = unsafe { libc::proc_listchildpids(parent, std::ptr::null_mut(), 0) };
+        if estimate < 0 {
+            return Vec::new();
+        }
+        let capacity = estimate as usize + headroom;
+        let Ok(bytes) = libc::c_int::try_from(capacity * size_of::<libc::pid_t>()) else {
+            return Vec::new();
+        };
+        let mut buf: Vec<libc::pid_t> = vec![0; capacity];
+        // SAFETY: the buffer is writable for `bytes` bytes and outlives the call.
+        let listed = unsafe { libc::proc_listchildpids(parent, buf.as_mut_ptr().cast(), bytes) };
+        if listed < 0 {
+            return Vec::new();
+        }
+        let listed = listed as usize;
+        if listed < capacity {
+            buf.truncate(listed);
+            return buf
+                .into_iter()
+                .filter_map(|pid| u32::try_from(pid).ok().filter(|p| *p > 0))
+                .collect();
+        }
+        headroom *= 4;
+    }
+    Vec::new()
 }
 
 /// Identities of every process this user may read. One syscall per PID;
@@ -131,15 +178,31 @@ mod tests {
         // Not waited for: once it exits it is a zombie, and its PID cannot
         // be reused until the wait below.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-        while identity(pid).is_some() {
+        while identity(pid).is_some() || !is_zombie(pid) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "zombie kept an identity"
+                "the child never read as an unreaped zombie with no identity"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(!table().unwrap().iter().any(|p| p.pid == pid));
         assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn children_lists_a_running_child_and_not_its_parent() {
+        let mut child = std::process::Command::new("/bin/sleep")
+            .arg("5")
+            .spawn()
+            .expect("start a child");
+        let me = std::process::id();
+        let listed = children(me);
+        let found = listed.contains(&child.id());
+        child.kill().ok();
+        child.wait().ok();
+        assert!(found, "{listed:?} lacks {}", child.id());
+        assert!(!listed.contains(&me));
+        assert!(children(0x7fff_fff0).is_empty());
     }
 
     #[test]

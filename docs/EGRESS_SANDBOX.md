@@ -96,6 +96,17 @@ A pass requires:
 6. Invalid watch arguments and an unidentifiable `--tree` PID exit 2 before
    anything is sampled, and a reader that closes the pipe ends the watch
    without a panic.
+7. With `--policy`, a tree watch of a shell that connects to a loopback
+   listener exits 0 when a rule permits that peer, and exits 1 with exactly
+   one `violation` record when none does. Endpoint records carry
+   `remote_class`, `local_class` and `exposed`.
+8. A bounded policy watch stopped by SIGTERM exits 2 with `interrupted`,
+   and a policy file that does not parse exits 2 before anything is sampled.
+9. Run as an ordinary user, an unscoped watch counts processes it cannot
+   read, and a tree watch of a shell that runs `sudo -n /bin/sleep` reports
+   that descendant as `unreadable` and ends `incomplete` (exit 2). Both
+   skip themselves under root, and the second skips without passwordless
+   `sudo`.
 
 These fixtures show that the stream reports what a sample can see. They do
 not measure how short a connection can be and still be caught.

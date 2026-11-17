@@ -3,8 +3,8 @@
 | Key / click | Action |
 |---|---|
 | Filter box | substring on process, PID, addrs, state, path |
-| Color remotes | orange fill on off-box peers (default on) |
-| Off-box only | hide listeners / loopback / `*:*` |
+| Color remotes | orange fill on off-box peers and exposed listeners (default on) |
+| Off-box only | show traffic leaving the Mac and exposed listeners (bound to `*` or a network address); hide loopback and loopback-only listeners |
 | Space | pause / resume |
 | R | refresh now |
 | N | toggle reverse DNS |

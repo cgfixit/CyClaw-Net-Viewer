@@ -5,7 +5,9 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use crate::dns::{lookup_ip, Resolved};
+use crate::netclass;
 use crate::peers::{local_peers, LocalPeer, Via};
+use crate::policy::Policy;
 use crate::procinfo::{self, ProcIdentity};
 use crate::proctree::Tracker;
 use crate::snapshot::{
@@ -20,6 +22,10 @@ pub struct CliArgs {
     pub filter: Option<String>,
     /// Add the local process on the other end of each connection.
     pub peers: bool,
+    /// Add the address class of each endpoint.
+    pub class: bool,
+    /// Policy file to check a watch against.
+    pub policy: Option<String>,
     pub watch: bool,
     pub interval_ms: Option<u64>,
     pub duration_s: Option<u64>,
@@ -51,15 +57,16 @@ impl Filter {
     }
 }
 
-/// Returns Ok(true) if CLI handled the process (including --help in CLI mode).
-pub fn dispatch(args: &[String]) -> Result<bool, String> {
+/// `Ok(None)` means the GUI should run. `Ok(Some(code))` means the CLI
+/// handled the process (including --help) and it should exit with `code`.
+pub fn dispatch(args: &[String]) -> Result<Option<i32>, String> {
     // `--watch` has no GUI meaning, so it selects the CLI by itself.
     if !args.iter().any(|a| a == "--cli" || a == "--watch") {
         if args.iter().any(|a| a == "-h" || a == "--help") {
             print_help();
-            return Ok(true);
+            return Ok(Some(0));
         }
-        return Ok(false);
+        return Ok(None);
     }
     let parsed = parse(args)?;
     run(&parsed)
@@ -72,6 +79,8 @@ fn parse(args: &[String]) -> Result<CliArgs, String> {
         numeric: false,
         filter: None,
         peers: false,
+        class: false,
+        policy: None,
         watch: false,
         interval_ms: None,
         duration_s: None,
@@ -85,6 +94,11 @@ fn parse(args: &[String]) -> Result<CliArgs, String> {
             "-c" => parsed.csv = true,
             "-n" => parsed.numeric = true,
             "--peers" => parsed.peers = true,
+            "--class" => parsed.class = true,
+            "--policy" => {
+                let path = rest.next().filter(|path| !path.is_empty());
+                parsed.policy = Some(path.ok_or("--policy needs a file")?.clone());
+            }
             "--watch" => parsed.watch = true,
             "--interval" => {
                 let range = watch::MIN_INTERVAL_MS..=watch::MAX_INTERVAL_MS;
@@ -119,6 +133,9 @@ fn parse(args: &[String]) -> Result<CliArgs, String> {
     }
     if !parsed.watch && (parsed.interval_ms.is_some() || parsed.duration_s.is_some()) {
         return Err("--interval and --for need --watch".into());
+    }
+    if parsed.policy.is_some() && !parsed.watch {
+        return Err("--policy needs --watch".into());
     }
     if parsed.watch && parsed.csv {
         return Err("--watch writes JSON Lines; -c applies to snapshots only".into());
@@ -161,11 +178,17 @@ fn resolve_roots(
         .collect()
 }
 
-fn run(args: &CliArgs) -> Result<bool, String> {
+fn run(args: &CliArgs) -> Result<Option<i32>, String> {
+    // Read before anything is sampled: a bad policy is a usage error.
+    let policy = args
+        .policy
+        .as_deref()
+        .map(|path| Policy::load(std::path::Path::new(path)))
+        .transpose()?;
     let roots = resolve_roots(&args.tree, procinfo::identity)?;
     let filter = args.filter.as_deref().map(Filter::parse);
     if args.watch {
-        return run_watch(args, roots, filter);
+        return run_watch(args, roots, filter, policy);
     }
 
     let mut eps = snapshot().map_err(|e| e.0)?;
@@ -186,8 +209,12 @@ fn run(args: &CliArgs) -> Result<bool, String> {
         eps.retain(|e| filter.matches(e));
     }
 
-    print_rows(&eps, args.csv, args.numeric, peers.as_ref(), lookup_ip);
-    Ok(true)
+    let columns = Columns {
+        class: args.class,
+        peers: peers.as_ref(),
+    };
+    print_rows(&eps, args.csv, args.numeric, &columns, lookup_ip);
+    Ok(Some(0))
 }
 
 /// `name[pid]` for each process holding the other end, lowest PID first.
@@ -222,40 +249,69 @@ fn peer_labels(eps: &[Endpoint]) -> HashMap<EndpointKey, String> {
 }
 
 /// Watch output is every endpoint, numeric, as JSON Lines: `-a` and `-n`
-/// are already implied. Exit 0 means every sample succeeded.
+/// are already implied. Without a policy, exit 0 means every sample
+/// succeeded. With one, the exit code is the verdict: 0 no violation seen,
+/// 1 violation, 2 incomplete.
 fn run_watch(
     args: &CliArgs,
     roots: Vec<ProcIdentity>,
     filter: Option<Filter>,
-) -> Result<bool, String> {
+    policy: Option<Policy>,
+) -> Result<Option<i32>, String> {
     let cfg = watch::Config {
         interval: Duration::from_millis(args.interval_ms.unwrap_or(watch::DEFAULT_INTERVAL_MS)),
         duration: args.duration_s.map(Duration::from_secs),
         roots,
         filter,
+        policy,
     };
     let mut source = watch::Live::new();
     let mut out = BufWriter::new(io::stdout().lock());
-    match watch::run(&cfg, &mut source, &mut out) {
-        Ok(summary) if summary.failed == 0 => Ok(true),
-        Ok(summary) => Err(format!(
+    let summary = match watch::run(&cfg, &mut source, &mut out) {
+        Ok(summary) => summary,
+        // The reader closed the pipe: nothing left to report to. A policy
+        // verdict was never reached, so it cannot pass.
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => {
+            return Ok(Some(if cfg.policy.is_some() { 2 } else { 0 }));
+        }
+        Err(e) => return Err(format!("watch output failed: {e}")),
+    };
+    match summary.verdict {
+        Some(verdict) => {
+            match verdict {
+                watch::Verdict::Pass => {}
+                watch::Verdict::Violation => eprintln!(
+                    "policy violation: {} endpoint(s) no rule permits",
+                    summary.violations
+                ),
+                watch::Verdict::Incomplete => eprintln!(
+                    "policy incomplete: {}",
+                    watch::incomplete_reasons(&cfg, &summary).join(", ")
+                ),
+            }
+            Ok(Some(verdict.exit_code()))
+        }
+        None if summary.failed == 0 => Ok(Some(0)),
+        None => Err(format!(
             "watch incomplete: {} of {} samples failed",
             summary.failed,
             summary.samples + summary.failed
         )),
-        // The reader closed the pipe: nothing left to report to.
-        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(true),
-        Err(e) => Err(format!("watch output failed: {e}")),
     }
 }
 
-/// `peers` adds a trailing Peer column; `None` leaves the output as it
-/// has always been.
+/// Optional trailing snapshot columns, in this order: Class, then Peer.
+/// Both off leaves the output as it has always been.
+struct Columns<'a> {
+    class: bool,
+    peers: Option<&'a HashMap<EndpointKey, String>>,
+}
+
 fn print_rows(
     eps: &[Endpoint],
     csv: bool,
     numeric: bool,
-    peers: Option<&HashMap<EndpointKey, String>>,
+    columns: &Columns,
     mut lookup: impl FnMut(IpAddr) -> Option<Resolved>,
 ) {
     let mut cache = HashMap::new();
@@ -270,27 +326,34 @@ fn print_rows(
     };
 
     if csv {
-        println!("{}", csv_header(peers.is_some()));
+        println!("{}", csv_header(columns.class, columns.peers.is_some()));
     }
     for e in eps {
-        let peer = peers.map(|labels| labels.get(&e.key).map_or("", String::as_str));
-        println!("{}", row(e, csv, peer, &mut name));
+        let class = columns.class.then(|| netclass::label(e));
+        let peer = columns
+            .peers
+            .map(|labels| labels.get(&e.key).map_or("", String::as_str));
+        println!("{}", row(e, csv, class.as_deref(), peer, &mut name));
     }
 }
 
-fn csv_header(peers: bool) -> &'static str {
+fn csv_header(class: bool, peers: bool) -> String {
+    let mut header = "Process,PID,Proto,Dir,Local,Remote,State,Path".to_string();
+    if class {
+        header.push_str(",Class");
+    }
     if peers {
-        "Process,PID,Proto,Dir,Local,Remote,State,Path,Peer"
-    } else {
-        "Process,PID,Proto,Dir,Local,Remote,State,Path"
+        header.push_str(",Peer");
     }
+    header
 }
 
-/// One output line. `peer` is `Some` when the Peer column was asked for,
-/// empty when this endpoint has no local peer.
+/// One output line. `class` and `peer` are `Some` when their columns were
+/// asked for, and empty when they say nothing about this endpoint.
 fn row(
     e: &Endpoint,
     csv: bool,
+    class: Option<&str>,
     peer: Option<&str>,
     name: &mut dyn FnMut(IpAddr) -> Option<Resolved>,
 ) -> String {
@@ -307,6 +370,11 @@ fn row(
             e.state_label(),
             csv_escape(&e.path)
         );
+        // Class words come from a fixed list; only the peer is untrusted.
+        if let Some(class) = class {
+            line.push(',');
+            line.push_str(class);
+        }
         if let Some(peer) = peer {
             line.push(',');
             line.push_str(&csv_escape(peer));
@@ -314,6 +382,10 @@ fn row(
         line
     } else {
         let mut line = text_row(e, &local, &remote);
+        if let Some(class) = class.filter(|word| !word.is_empty()) {
+            line.push_str("  class=");
+            line.push_str(class);
+        }
         if let Some(peer) = peer.filter(|label| !label.is_empty()) {
             // After the path, which has no fixed width.
             line.push_str("  peer=");
@@ -365,22 +437,30 @@ fn print_help() {
          \n\
          GUI:    netboard\n\
          CLI:    netboard --cli [-a] [-c] [-n] [process|pid]\n\
-         Watch:  netboard --cli --watch [--interval MS] [--for SECONDS] [process|pid]\n\
+         Watch:  netboard --cli --watch [--interval MS] [--for SECONDS] [--policy FILE] [process|pid]\n\
          \n\
          \x20 -a             all endpoints (default: ESTABLISHED TCP)\n\
          \x20 -c             CSV\n\
          \x20 -n             numeric addresses (no reverse DNS)\n\
          \x20 --tree PID     only this process and its descendants; repeat for more roots\n\
          \x20 --peers        add the local process on the other end (always on with --watch)\n\
+         \x20 --class        add loopback, lan, public, ... or exposed-<bind> (always on with --watch)\n\
          \x20 --watch        JSON Lines events until interrupted: every endpoint, never DNS\n\
          \x20 --interval MS  time between watch samples, 50 to 60000 (default 1000)\n\
-         \x20 --for SECONDS  end the watch after this long, 1 to 86400\n"
+         \x20 --for SECONDS  end the watch after this long, 1 to 86400\n\
+         \x20 --policy FILE  check the watch against allow/listen rules; exit 0 no violation\n\
+         \x20                seen, 1 violation, 2 incomplete (see docs/POLICY.md)\n"
     );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NO_COLUMNS: Columns<'static> = Columns {
+        class: false,
+        peers: None,
+    };
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).into()).collect()
@@ -505,7 +585,7 @@ mod tests {
             dispatch(&args(&["netboard", "--watch", "--bogus"])),
             Err("unknown flag: --bogus".into())
         );
-        assert_eq!(dispatch(&args(&["netboard", "--bogus"])), Ok(false));
+        assert_eq!(dispatch(&args(&["netboard", "--bogus"])), Ok(None));
     }
 
     #[test]
@@ -535,11 +615,11 @@ mod tests {
                 .peers
         );
         assert_eq!(
-            csv_header(false),
+            csv_header(false, false),
             "Process,PID,Proto,Dir,Local,Remote,State,Path"
         );
         assert_eq!(
-            csv_header(true),
+            csv_header(false, true),
             "Process,PID,Proto,Dir,Local,Remote,State,Path,Peer"
         );
 
@@ -557,20 +637,59 @@ mod tests {
         let peer = Some(labels[&client.key].as_str());
         // CSV keeps the raw name inside quoting, with the formula guard.
         assert_eq!(
-            row(&client, true, peer, &mut none),
+            row(&client, true, None, peer, &mut none),
             "example,42,TCP4,Out,127.0.0.1:50000,127.0.0.1:8080,ESTABLISHED,,\
              \"'=srv,\u{202E}x[77]\""
         );
-        assert!(row(&away, true, Some(""), &mut none).ends_with(",ESTABLISHED,,"));
-        assert!(row(&away, true, None, &mut none).ends_with(",ESTABLISHED,"));
+        assert!(row(&away, true, None, Some(""), &mut none).ends_with(",ESTABLISHED,,"));
+        assert!(row(&away, true, None, None, &mut none).ends_with(",ESTABLISHED,"));
         // Text output cannot be reordered by the peer's name.
-        let text = row(&client, false, peer, &mut none);
+        let text = row(&client, false, None, peer, &mut none);
         assert!(text.ends_with("  peer==srv, x[77]"), "{text:?}");
-        assert!(!row(&away, false, Some(""), &mut none).contains("peer="));
+        assert!(!row(&away, false, None, Some(""), &mut none).contains("peer="));
         assert_eq!(
-            row(&client, false, None, &mut none),
+            row(&client, false, None, None, &mut none),
             text_row(&client, "127.0.0.1:50000", "127.0.0.1:8080")
         );
+    }
+
+    #[test]
+    fn class_flag_adds_a_column_ahead_of_peer_and_policy_needs_watch() {
+        assert!(
+            parse(&args(&["netboard", "--cli", "--class"]))
+                .unwrap()
+                .class
+        );
+        assert_eq!(
+            csv_header(true, true),
+            "Process,PID,Proto,Dir,Local,Remote,State,Path,Class,Peer"
+        );
+        assert_eq!(
+            csv_header(true, false),
+            "Process,PID,Proto,Dir,Local,Remote,State,Path,Class"
+        );
+        let mut none = |_| None;
+        let away = endpoint("192.0.2.10:50001", "8.8.8.8:443");
+        let class = netclass::label(&away);
+        assert_eq!(class, "public");
+        assert!(
+            row(&away, true, Some(&class), Some(""), &mut none).ends_with(",ESTABLISHED,,public,")
+        );
+        let text = row(&away, false, Some(&class), None, &mut none);
+        assert!(text.ends_with("  class=public"), "{text:?}");
+        assert!(!row(&away, false, Some(""), None, &mut none).contains("class="));
+
+        let watch = parse(&args(&["netboard", "--watch", "--policy", "p.txt"])).unwrap();
+        assert_eq!(watch.policy.as_deref(), Some("p.txt"));
+        for (values, expected) in [
+            (vec!["--cli", "--policy", "p.txt"], "--policy needs --watch"),
+            (vec!["--watch", "--policy"], "--policy needs a file"),
+            (vec!["--watch", "--policy", ""], "--policy needs a file"),
+        ] {
+            let mut full = vec!["netboard"];
+            full.extend(&values);
+            assert_eq!(parse(&args(&full)).err().as_deref(), Some(expected));
+        }
     }
 
     #[test]
@@ -676,7 +795,7 @@ mod tests {
                 }),
             ] {
                 let mut calls = Vec::new();
-                print_rows(&eps, csv, false, None, |ip| {
+                print_rows(&eps, csv, false, &NO_COLUMNS, |ip| {
                     calls.push(ip);
                     answer.clone()
                 });
@@ -722,12 +841,16 @@ mod tests {
                 ],
                 csv,
                 true,
-                None,
+                &NO_COLUMNS,
                 |_| panic!("numeric output must not resolve names"),
             );
-            print_rows(&[endpoint("0.0.0.0:0", "[::]:0")], csv, false, None, |_| {
-                panic!("unspecified addresses must not resolve names")
-            });
+            print_rows(
+                &[endpoint("0.0.0.0:0", "[::]:0")],
+                csv,
+                false,
+                &NO_COLUMNS,
+                |_| panic!("unspecified addresses must not resolve names"),
+            );
         }
     }
 }

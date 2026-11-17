@@ -111,6 +111,11 @@ impl Tracker {
         self.members.get(&pid).map(|m| m.identity.start)
     }
 
+    /// Member PIDs in ascending order.
+    pub fn pids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.members.keys().copied()
+    }
+
     pub fn contains(&self, pid: u32) -> bool {
         self.members.contains_key(&pid)
     }

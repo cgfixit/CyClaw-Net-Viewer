@@ -155,8 +155,23 @@ pub fn direction(
 }
 
 pub fn snapshot() -> Result<Vec<Endpoint>, SnapshotError> {
-    let socks = sockets::scan().map_err(|e| SnapshotError(format!("libproc sockets: {e}")))?;
-    Ok(endpoints(socks, proc_names))
+    sample().map(|s| s.endpoints)
+}
+
+/// One scan: the endpoints, and the processes whose sockets could not be
+/// read (another user's, unless running as root). Endpoints of those are
+/// missing, not absent.
+pub struct Sample {
+    pub endpoints: Vec<Endpoint>,
+    pub unreadable: Vec<u32>,
+}
+
+pub fn sample() -> Result<Sample, SnapshotError> {
+    let scan = sockets::scan().map_err(|e| SnapshotError(format!("libproc sockets: {e}")))?;
+    Ok(Sample {
+        endpoints: endpoints(scan.sockets, proc_names),
+        unreadable: scan.unreadable,
+    })
 }
 
 /// Direction and process metadata for one scan. `names` is asked once per PID.
