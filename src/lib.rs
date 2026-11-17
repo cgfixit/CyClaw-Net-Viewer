@@ -11,10 +11,12 @@ pub mod diff;
 pub mod dns;
 pub mod export;
 pub mod kill;
+pub mod peers;
 pub mod procinfo;
 pub mod proctree;
 pub mod ptr;
 pub mod snapshot;
+pub mod sockets;
 pub mod watch;
 
 pub use diff::{diff, Highlight, Row};

@@ -199,6 +199,7 @@ fn help_lists_the_watch_and_tree_flags() {
     for text in [
         "netboard --cli --watch [--interval MS] [--for SECONDS] [process|pid]",
         "  --tree PID ",
+        "  --peers ",
         "  --watch ",
         "  --interval MS ",
         "  --for SECONDS ",
@@ -219,7 +220,10 @@ fn bounded_watch_of_nothing_is_a_start_and_an_end_record() {
     assert!(lines[0].starts_with("{\"type\":\"start\",\"schema\":\"netboard.watch/1\","));
     assert!(lines[0].contains("\"interval_ms\":100,\"duration_s\":1,\"roots\":[],"));
     assert!(lines[0].contains("\"filter\":{\"pid\":4294967295}"));
-    assert!(lines[0].ends_with("\"untrusted_fields\":[\"process.name\",\"process.path\"]}"));
+    assert!(lines[0].ends_with(
+        "\"untrusted_fields\":[\"process.name\",\"process.path\",\
+         \"peer.processes.name\",\"peer.processes.path\"]}"
+    ));
     assert!(lines[1].starts_with("{\"type\":\"baseline\","));
     assert!(lines[1].ends_with("\"endpoints\":0,\"processes\":null}"));
     assert!(lines[2].starts_with("{\"type\":\"end\","));
@@ -266,7 +270,6 @@ fn watch_reports_a_connection_opening_and_closing_then_stops_on_sigterm() {
     assert_eq!(field(&baseline, "endpoints"), "0");
 
     input.write_all(b"start\n").unwrap();
-    let _held = accept(&listener);
     let peer = format!(
         "\"remote\":{{\"ip\":\"127.0.0.1\",\"port\":{}}}",
         remote.port()
@@ -287,6 +290,17 @@ fn watch_reports_a_connection_opening_and_closing_then_stops_on_sigterm() {
         "{started}"
     );
     assert!(started.ends_with('Z') && started.contains('T'));
+    // Not accepted yet, so no socket holds the other end: the peer is the
+    // process listening on that loopback port, which is this test.
+    let me = std::process::id();
+    assert!(
+        opened.contains(&format!(
+            "\"peer\":{{\"via\":\"listener\",\"process_count\":1,\"processes\":[{{\"pid\":{me},"
+        )),
+        "{opened}"
+    );
+    assert!(opened.ends_with("\"in_scope\":true}]}}"), "{opened}");
+    let _held = accept(&listener);
 
     input.write_all(b"close\n").unwrap();
     let closed = watch.wait_for("closed endpoint", |l| {
@@ -380,6 +394,16 @@ fn tree_watch_follows_a_reparented_child_until_the_whole_tree_exits() {
     });
     assert_eq!(field(&held, "event"), "existing");
     assert_eq!(field(&held, "state"), "ESTABLISHED");
+    // The other end is the socket this test accepted. This process is not
+    // in the watched tree, and the record says so.
+    let me = std::process::id();
+    assert!(
+        held.contains(&format!(
+            "\"peer\":{{\"via\":\"connection\",\"process_count\":1,\"processes\":[{{\"pid\":{me},"
+        )),
+        "{held}"
+    );
+    assert!(held.ends_with("\"in_scope\":false}]}}"), "{held}");
     let child_pid = field(&held, "pid").to_string();
     assert_ne!(child_pid, root_pid.to_string(), "the child owns the socket");
     watch.wait_for("root tracked", |l| {
@@ -416,6 +440,11 @@ fn tree_watch_follows_a_reparented_child_until_the_whole_tree_exits() {
     assert_eq!(field(&opened, "pid"), child_pid);
     assert_eq!(field(&opened, "start"), field(&held, "start"));
     assert_ne!(local(&opened), local(&held), "a second local port");
+    // Accepted or still queued, the other end is this process either way.
+    assert!(
+        opened.contains(&format!("\"processes\":[{{\"pid\":{me},")),
+        "{opened}"
+    );
 
     // Closing both connections lets the orphan exit; the watch then ends by
     // itself, long before its 60 s limit.
@@ -481,6 +510,16 @@ fn snapshot_tree_includes_this_process_and_its_own_sockets() {
         assert!(csv.starts_with("Process,PID,Proto,Dir,Local,Remote,State,Path\n"));
         csv.lines().any(|row| row.contains(&expected))
     });
+    // With --peers the row names who holds the other end: this process.
+    let with_peers = run(&["--cli", "-n", "-c", "--peers", "--tree", &me]);
+    assert!(with_peers.status.success());
+    let csv = String::from_utf8(with_peers.stdout).unwrap();
+    assert!(csv.starts_with("Process,PID,Proto,Dir,Local,Remote,State,Path,Peer\n"));
+    let row = csv
+        .lines()
+        .find(|row| row.contains(&expected))
+        .expect("own connection with peers");
+    assert!(row.ends_with(&format!("[{me}]")), "{row}");
     // The same snapshot filtered to a PID outside the tree is empty.
     let outside = run(&["--cli", "-n", "-a", "-c", "--tree", &me, "4294967295"]);
     assert_eq!(

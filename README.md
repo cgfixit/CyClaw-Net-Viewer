@@ -23,7 +23,7 @@ Synthetic data, documentation IP ranges only.*
 
 ## What it does
 
-- Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6. Columns: process, PID, protocol, direction, local and remote addresses, TCP state.
+- Lists TCP and UDP sockets this Mac will admit through libproc, including IPv4 and IPv6. Columns: process, PID, protocol, direction, local and remote addresses, TCP state. A UDP socket that is connected to a peer (QUIC, most DNS) shows that peer.
 - Refreshes on a timer (default 1s) with the event colors below.
 - Keeps the observed socket IP and port in every cell. Optional reverse DNS is an untrusted label only; it is off by default in the GUI. Long names are shortened before the IP is. CLI `-n` stays numeric.
 - When your router has no reverse-DNS answer, Resolve names asks LAN devices
@@ -37,6 +37,9 @@ Synthetic data, documentation IP ranges only.*
 - Watches without a window: `--watch` writes one JSON line per socket that
   opens, changes state, or closes, and `--tree PID` follows a process and
   everything it starts. See [Watch mode](#watch-mode).
+- Names the local process on the other end of a connection to this Mac, so
+  traffic to `127.0.0.1` shows which proxy, model server or daemon receives
+  it (`--peers`, and always in a watch).
 
 See [Direction](docs/DESIGN.md#direction). Refresh,
 deletion, and address rules: [Design](docs/DESIGN.md).
@@ -96,6 +99,7 @@ netboard --cli --watch [--interval MS] [--for SECONDS] [process|pid]
 | `-n` | Numeric addresses, no reverse DNS |
 | `process` or `pid` | Optional filter |
 | `--tree PID` | Only this process and its descendants. Repeat for up to 16 roots. Works with a snapshot or a watch |
+| `--peers` | Add a `Peer` column: the local process holding the other end, as `name[pid]`. Always on with `--watch` |
 | `--watch` | Keep sampling and write JSON Lines events. Selects the CLI by itself |
 | `--interval MS` | Time between watch samples, 50 to 60000 (default 1000) |
 | `--for SECONDS` | End the watch after this long, 1 to 86400 |
@@ -115,10 +119,11 @@ wait for the `baseline` record, then launch
 Each line is one JSON object:
 
 ```json
-{"type":"start","schema":"netboard.watch/1","version":"0.1.3","ts":"2026-11-17T03:04:05.000Z","interval_ms":1000,"duration_s":null,"roots":[{"pid":2108,"start":"2026-11-17T03:04:04.512345Z"}],"filter":null,"untrusted_fields":["process.name","process.path"]}
+{"type":"start","schema":"netboard.watch/1","version":"0.1.3","ts":"2026-11-17T03:04:05.000Z","interval_ms":1000,"duration_s":null,"roots":[{"pid":2108,"start":"2026-11-17T03:04:04.512345Z"}],"filter":null,"untrusted_fields":["process.name","process.path","peer.processes.name","peer.processes.path"]}
 {"type":"process","ts":"2026-11-17T03:04:05.003Z","event":"tracked","reason":"root","process":{"pid":2108,"ppid":611,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"}}
 {"type":"baseline","ts":"2026-11-17T03:04:05.003Z","endpoints":0,"processes":1}
-{"type":"endpoint","ts":"2026-11-17T03:04:07.004Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"192.0.2.10","port":54321},"remote":{"ip":"198.51.100.7","port":443},"state":"ESTABLISHED","off_box":true}
+{"type":"endpoint","ts":"2026-11-17T03:04:07.004Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"192.0.2.10","port":54321},"remote":{"ip":"198.51.100.7","port":443},"state":"ESTABLISHED","off_box":true,"peer":null}
+{"type":"endpoint","ts":"2026-11-17T03:04:08.005Z","event":"new","process":{"pid":2108,"start":"2026-11-17T03:04:04.512345Z","name":"my-agent","path":"/usr/local/bin/my-agent"},"proto":"tcp","ip_version":4,"dir":"out","local":{"ip":"127.0.0.1","port":54400},"remote":{"ip":"127.0.0.1","port":11434},"state":"ESTABLISHED","off_box":false,"peer":{"via":"connection","process_count":1,"processes":[{"pid":812,"start":"2026-11-17T02:58:11.004200Z","name":"ollama","path":"/usr/local/bin/ollama","in_scope":false}]}}
 {"type":"end","ts":"2026-11-17T03:04:09.006Z","reason":"scope_exited","samples":5,"failed_samples":0,"max_gap_ms":1001,"elapsed_ms":4003}
 ```
 
@@ -126,6 +131,10 @@ Each line is one JSON object:
   `changed` (TCP state, with `prev_state`), and `closed`. Everything before
   the `baseline` record was already there; every endpoint event after it is
   a change.
+- `peer` names the local process on the other end when there is one. In the
+  example the agent talks to `ollama` on loopback, and `in_scope` is false
+  because `ollama` is not in the watched tree: what it sends on is not in
+  this stream. Add it as a second `--tree` root to see that too.
 - With `--tree`, a child stays tracked after its parent exits and launchd
   adopts it. A process is the PID plus its kernel start time, so a reused
   PID is never mistaken for the old process.
@@ -139,6 +148,8 @@ Each line is one JSON object:
 A watch reports what it sampled. A socket that opens and closes between two
 samples is never seen, so an empty stream is not proof that nothing was
 sent; `max_gap_ms` in the `end` record is the longest unobserved interval.
+A connection to a local peer is not egress by itself, and it is not proof
+of none either: the peer may forward it.
 Process names and paths are chosen by whoever started the process: treat
 them as untrusted text, above all before showing the file to a language
 model. Record fields, ordering, and limits: [Design](docs/DESIGN.md#watch-stream).

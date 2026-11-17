@@ -17,7 +17,9 @@ open PRs for overlapping work first and use `.github/PULL_REQUEST_TEMPLATE.md`.
 ## Source map
 
 - `src/main.rs`, `src/cli.rs`: GUI/CLI dispatch and snapshot output.
-- `src/snapshot.rs`: Darwin socket enumeration, process metadata, formatting.
+- `src/sockets.rs`: libproc socket walk and the `socket_fdinfo` mirror.
+- `src/snapshot.rs`: direction, process metadata, formatting.
+- `src/peers.rs`: which local process holds the other end of a connection.
 - `src/diff.rs`: endpoint identity and highlight lifecycle.
 - `src/watch.rs`: headless `--watch` loop, JSON Lines records, signal stop.
 - `src/procinfo.rs`, `src/proctree.rs`: libproc process identity (PID plus
@@ -87,6 +89,9 @@ and use the macOS CI results, never remove the platform guard to fake a pass.
   a watch as proof that nothing was sent: it samples.
 - Keep FFI changes small, document pointer/length assumptions, and validate
   on macOS. Do not introduce shell interpolation for process metadata.
+  `src/sockets.rs` mirrors a kernel struct: keep its compile-time size and
+  offset assertions, read a record only when the call returns its full
+  length, and add fields by naming them, not by guessing offsets.
 - Keep GitHub Actions permissions read-only, checkout credentials disabled,
   and action references pinned to reviewed full commit hashes.
 

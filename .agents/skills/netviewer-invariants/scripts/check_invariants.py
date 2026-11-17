@@ -47,6 +47,7 @@ def main() -> int:
         kill = read(root, "src/kill.rs")
         export = read(root, "src/export.rs")
         watch = read(root, "src/watch.rs")
+        sockets = read(root, "src/sockets.rs")
         ci = read(root, ".github/workflows/ci.yml")
         toolchain = read(root, "rust-toolchain.toml")
     except FileNotFoundError as err:
@@ -126,6 +127,17 @@ def main() -> int:
         "watch_declares_untrusted_fields",
         '"untrusted_fields"' in watch and "process.name" in watch and "process.path" in watch,
         "watch start record must mark process name and path untrusted",
+    )
+    check(
+        "sockets_read_full_records_only",
+        "(got == size).then" in sockets and "MaybeUninit::<SocketFdInfo>::zeroed()" in sockets,
+        "src/sockets.rs must read a socket record only at full length, from zeroed storage",
+    )
+    check(
+        "sockets_layout_asserted",
+        "size_of::<SocketFdInfo>() == 792" in sockets
+        and "offset_of!(SocketInfo, soi_proto) == 240" in sockets,
+        "src/sockets.rs must keep its compile-time layout assertions",
     )
     check(
         "ci_contents_read",

@@ -38,7 +38,7 @@ permission solely from the skill name. Never merge or push the default branch
 4. Read `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `scripts/check.sh` and
    the active workflows. Re-derive versions, dependencies and validation from
    source. The baseline targets macOS 12+, Intel and Apple Silicon, Rust 1.85.0,
-   eframe/egui, netstat2 and Darwin libproc; do not freeze these as eternal pins.
+   eframe/egui and Darwin libproc; do not freeze these as eternal pins.
 5. List open PRs using available GitHub tools or a verified GitHub CLI. Inspect
    the diffs and current review/check state of plausible overlaps. On Windows,
    verify `gh` resolves to the GitHub CLI, not an unrelated executable. Never
@@ -57,7 +57,9 @@ Use this map to choose a bounded path through the repository:
 
 | Area | Inspect and preserve |
 | --- | --- |
-| `src/snapshot.rs` | PID attribution, IPv4/IPv6 and wildcard endpoints, process name/path decoding, available netstat2 fields, direction evidence. A local UDP binding does not prove traffic direction; do not invent missing remote peers or call proc_name a bundle-ID API. |
+| `src/sockets.rs` | The `socket_fdinfo` mirror: compile-time size and offset assertions, full-length reads only, IPv4 slot versus IPv6 slot by `insi_vflag`, network-order ports. A layout change needs the Darwin header, not a guess. |
+| `src/peers.rs` | Mirrored address pairs for any address, listener and binding fallbacks for loopback only, exact address before wildcard, owner cap and total. Never infer a local peer for an off-machine destination. |
+| `src/snapshot.rs` | PID attribution, IPv4/IPv6 and wildcard endpoints, process name/path decoding, direction evidence. A local UDP binding does not prove traffic direction; do not invent missing remote peers or call proc_name a bundle-ID API. |
 | `src/diff.rs`, `tests/diff.rs` | Endpoint identity `(pid, proto, ip_ver, local, remote)`, state transitions, returning keys, exact deleted-row visibility. Trace every tick before alleging an off-by-one error. |
 | `src/app.rs` | Refresh ownership, lock duration, frame-stable rows, filtering/sorting, selection, repaint/pause, event-color precedence, CSV and termination flows. Measure allocations or work at representative synthetic row counts; do not trade stable snapshots for a cosmetic speedup. |
 | `src/dns.rs` | Queue capacity, receive contention, duplicate and negative caching, overload retry, worker lifetime/shutdown, PTR versus forward A lookup, Darwin sockaddr family/length/byte order. Keep DNS outside UI/publication locks. |

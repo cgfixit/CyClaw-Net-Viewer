@@ -43,8 +43,9 @@ check run requiring write access.
   socket of its own, and writes to stdout alone. Its stream holds process
   names, executable paths, PIDs and peer addresses: redirect it under
   `umask 077`, because stdout does not get the GUI's private-file policy.
-  Names and paths are attacker-chosen and are declared in the `start`
-  record's `untrusted_fields`; JSON strings escape controls, bidi and
+  Names and paths, of a process and of its local peers, are attacker-chosen
+  and are declared in the `start` record's `untrusted_fields`; JSON strings
+  escape controls, bidi and
   zero-width characters so a hostile name cannot forge a record or reorder
   a terminal line, but the text itself is unchanged for a parser. Do not
   hand a capture to a language model as trusted input. A watch is a series
@@ -58,6 +59,13 @@ check run requiring write access.
   cannot be identified is refused (exit 2) instead of printing nothing.
   SIGINT and SIGTERM end a watch after its `end` record; the handler only
   sets a flag.
+- Sockets are read with first-party libproc calls in `src/sockets.rs`. The
+  kernel record layout is asserted at compile time and only a full-length
+  answer is read, so a descriptor that closes mid-scan is skipped rather
+  than read from stale memory. A local peer (`--peers`, watch `peer`) is a
+  match within one snapshot: it names who held the other end then, it is
+  not found when that process cannot be read, and a null peer does not
+  mean a connection stayed on this Mac.
 - GUI CSV exports go to `~/Downloads` (or `~` when that folder is missing)
   and are created exclusively with mode 0600, without following
   existing symlinks. Existing files are never overwritten. A failed write

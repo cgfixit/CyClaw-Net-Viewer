@@ -1,9 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-use netstat2::{
-    get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, TcpState as NsTcp,
-};
+use crate::sockets;
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Proto {
@@ -56,23 +54,6 @@ impl TcpState {
             TcpState::LastAck => "LAST_ACK",
             TcpState::TimeWait => "TIME_WAIT",
             TcpState::Unknown => "UNKNOWN",
-        }
-    }
-
-    fn from_ns(s: NsTcp) -> Self {
-        match s {
-            NsTcp::Closed => TcpState::Closed,
-            NsTcp::Listen => TcpState::Listen,
-            NsTcp::SynSent => TcpState::SynSent,
-            NsTcp::SynReceived => TcpState::SynReceived,
-            NsTcp::Established => TcpState::Established,
-            NsTcp::FinWait1 => TcpState::FinWait1,
-            NsTcp::FinWait2 => TcpState::FinWait2,
-            NsTcp::CloseWait => TcpState::CloseWait,
-            NsTcp::Closing => TcpState::Closing,
-            NsTcp::LastAck => TcpState::LastAck,
-            NsTcp::TimeWait => TcpState::TimeWait,
-            NsTcp::DeleteTcb | NsTcp::Unknown => TcpState::Unknown,
         }
     }
 }
@@ -136,7 +117,8 @@ impl std::error::Error for SnapshotError {}
 /// port and address; a wildcard binding covers that family's local addresses.
 /// Missing peers, port zero, unknown owners or unmatched bindings mean Unknown,
 /// including client-style endpoints: a peer alone is not evidence of Out.
-/// netstat2 currently omits UDP peers, so real UDP snapshots remain Unknown.
+/// `udp_bindings` holds unconnected sockets only, so a connected socket is
+/// never its own receiver: an ordinary UDP client stays Unknown.
 pub fn direction(
     proto: Proto,
     state: Option<TcpState>,
@@ -173,40 +155,39 @@ pub fn direction(
 }
 
 pub fn snapshot() -> Result<Vec<Endpoint>, SnapshotError> {
-    let af = AddressFamilyFlags::IPV4 | AddressFamilyFlags::IPV6;
-    let proto = ProtocolFlags::TCP | ProtocolFlags::UDP;
-    let socks =
-        get_sockets_info(af, proto).map_err(|e| SnapshotError(format!("libproc sockets: {e}")))?;
+    let socks = sockets::scan().map_err(|e| SnapshotError(format!("libproc sockets: {e}")))?;
+    Ok(endpoints(socks, proc_names))
+}
 
+/// Direction and process metadata for one scan. `names` is asked once per PID.
+fn endpoints(
+    socks: Vec<sockets::RawSocket>,
+    mut names_of: impl FnMut(u32) -> (String, String),
+) -> Vec<Endpoint> {
     let mut names: HashMap<u32, (String, String)> = HashMap::new();
     let mut listen_ports: HashSet<(u32, u16)> = HashSet::new();
     let mut udp_bindings = HashSet::new();
     let mut raw: Vec<(u32, Proto, SocketAddr, SocketAddr, Option<TcpState>)> =
         Vec::with_capacity(socks.len());
 
-    for si in socks {
-        let pid = si.associated_pids.first().copied().unwrap_or(0);
-        match si.protocol_socket_info {
-            ProtocolSocketInfo::Tcp(t) => {
-                let local = SocketAddr::new(t.local_addr, t.local_port);
-                let remote = SocketAddr::new(t.remote_addr, t.remote_port);
-                let state = TcpState::from_ns(t.state);
-                if state == TcpState::Listen {
-                    listen_ports.insert((pid, t.local_port));
+    for s in socks {
+        match s.proto {
+            Proto::Tcp => {
+                if s.state == Some(TcpState::Listen) {
+                    listen_ports.insert((s.pid, s.local.port()));
                 }
-                raw.push((pid, Proto::Tcp, local, remote, Some(state)));
             }
-            ProtocolSocketInfo::Udp(u) => {
-                let local = SocketAddr::new(u.local_addr, u.local_port);
-                // This is a binding, not proof of a UDP listener. The source
-                // does not expose peers, even for connected UDP sockets.
-                if pid != 0 && local.port() != 0 {
-                    udp_bindings.insert((pid, local));
+            Proto::Udp => {
+                // A binding is a socket waiting for anyone, not proof of a
+                // listener. One that is connected to a peer is not a
+                // receiver for its own traffic.
+                let connected = !s.remote.ip().is_unspecified() && s.remote.port() != 0;
+                if s.pid != 0 && s.local.port() != 0 && !connected {
+                    udp_bindings.insert((s.pid, s.local));
                 }
-                let remote = unspecified_remote(u.local_addr);
-                raw.push((pid, Proto::Udp, local, remote, None));
             }
         }
+        raw.push((s.pid, s.proto, s.local, s.remote, s.state));
     }
 
     let mut out = Vec::with_capacity(raw.len());
@@ -230,7 +211,7 @@ pub fn snapshot() -> Result<Vec<Endpoint>, SnapshotError> {
         } else {
             // Resolve each PID once per snapshot. Each Endpoint owns its strings
             // after this cache is dropped; these per-row clones are intentional.
-            names.entry(pid).or_insert_with(|| proc_names(pid)).clone()
+            names.entry(pid).or_insert_with(|| names_of(pid)).clone()
         };
         let process = if process.is_empty() {
             "?".into()
@@ -251,7 +232,7 @@ pub fn snapshot() -> Result<Vec<Endpoint>, SnapshotError> {
             path,
         });
     }
-    Ok(out)
+    out
 }
 
 fn unspecified_remote(local: IpAddr) -> SocketAddr {
@@ -525,7 +506,7 @@ mod tests {
             (10, sa(53), sa(50000), Dir::In),          // wildcard server binding
             (11, sa(5353), sa(50000), Dir::In),        // exact server binding
             (10, sa(50000), sa(53), Dir::Unknown),     // client-shaped, no evidence
-            (10, sa(53), unspecified(), Dir::Unknown), // current netstat2 data
+            (10, sa(53), unspecified(), Dir::Unknown), // never connected
             (10, wildcard, sa(50000), Dir::In),
             (
                 10,
@@ -561,6 +542,69 @@ mod tests {
             ),
             Dir::Unknown
         );
+    }
+
+    #[test]
+    fn a_connected_udp_socket_keeps_its_peer_and_is_not_its_own_receiver() {
+        let raw = |pid, proto, local: &str, remote: &str, state| sockets::RawSocket {
+            pid,
+            proto,
+            local: local.parse().unwrap(),
+            remote: remote.parse().unwrap(),
+            state,
+        };
+        let mut asked = Vec::new();
+        let eps = endpoints(
+            vec![
+                // A client: connected, with no unconnected sibling on its port.
+                raw(10, Proto::Udp, "192.0.2.10:50000", "203.0.113.9:443", None),
+                // A server: one unconnected socket and one connected to a client.
+                raw(20, Proto::Udp, "0.0.0.0:4433", "0.0.0.0:0", None),
+                raw(
+                    20,
+                    Proto::Udp,
+                    "192.0.2.10:4433",
+                    "198.51.100.7:61000",
+                    None,
+                ),
+                raw(
+                    30,
+                    Proto::Tcp,
+                    "127.0.0.1:8080",
+                    "0.0.0.0:0",
+                    Some(TcpState::Listen),
+                ),
+                raw(
+                    30,
+                    Proto::Tcp,
+                    "127.0.0.1:8080",
+                    "127.0.0.1:51000",
+                    Some(TcpState::Established),
+                ),
+            ],
+            |pid| {
+                asked.push(pid);
+                (format!("p{pid}"), String::new())
+            },
+        );
+        let seen: Vec<(u32, String, Dir)> = eps
+            .iter()
+            .map(|e| (e.key.pid, e.key.remote.to_string(), e.dir))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (10, "203.0.113.9:443".to_string(), Dir::Unknown),
+                (20, "0.0.0.0:0".to_string(), Dir::Unknown),
+                (20, "198.51.100.7:61000".to_string(), Dir::In),
+                (30, "0.0.0.0:0".to_string(), Dir::Listen),
+                (30, "127.0.0.1:51000".to_string(), Dir::In),
+            ]
+        );
+        assert!(is_offbox(eps[0].key.remote), "a UDP peer can be off-box");
+        assert_eq!(eps[0].process, "p10");
+        asked.sort_unstable();
+        assert_eq!(asked, [10, 20, 30], "names are read once per PID");
     }
 
     #[test]

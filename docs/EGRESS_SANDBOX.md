@@ -59,9 +59,11 @@ The default test emulates outgoing traffic on loopback. It does not test a
 physical network interface. LAN mode can exercise an off-machine route, but
 NetViewer remains a socket observer, not an egress filter or packet capture.
 It cannot prove absence of short-lived traffic between snapshots or that an
-OS sandbox blocks all connections. UDP remote peers are unavailable through
-the current Darwin socket library and are covered separately as Unknown
-direction in `tests/live_listen.rs`. No CyClaw AI runtime is required.
+OS sandbox blocks all connections. UDP is covered separately in
+`tests/live_listen.rs`: a connected UDP socket reports its peer, an
+unconnected one reports none, and both have Unknown direction. The same
+file checks IPv6 loopback and an IPv4 client on an IPv6 listener. No CyClaw
+AI runtime is required.
 
 ## Watch and process-tree fixtures
 
@@ -87,7 +89,11 @@ A pass requires:
    itself with `scope_exited`.
 4. A one-shot `--cli --tree` snapshot of the test process contains that
    process's own loopback connection.
-5. Invalid watch arguments and an unidentifiable `--tree` PID exit 2 before
+5. The record for a connection names the local process on the other end:
+   the listener while the connection is still queued, the accepted socket's
+   owner afterwards, marked out of scope when it is outside the tree. A
+   `--cli --peers` snapshot shows the same in its `Peer` column.
+6. Invalid watch arguments and an unidentifiable `--tree` PID exit 2 before
    anything is sampled, and a reader that closes the pipe ends the watch
    without a panic.
 

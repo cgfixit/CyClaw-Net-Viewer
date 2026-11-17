@@ -5,10 +5,11 @@ use std::ops::RangeInclusive;
 use std::time::Duration;
 
 use crate::dns::{lookup_ip, Resolved};
+use crate::peers::{local_peers, LocalPeer, Via};
 use crate::procinfo::{self, ProcIdentity};
 use crate::proctree::Tracker;
 use crate::snapshot::{
-    csv_escape, fmt_addr, sanitize_clipboard_text, snapshot, Endpoint, TcpState,
+    csv_escape, fmt_addr, sanitize_clipboard_text, snapshot, Endpoint, EndpointKey, TcpState,
 };
 use crate::watch;
 
@@ -17,6 +18,8 @@ pub struct CliArgs {
     pub csv: bool,
     pub numeric: bool,
     pub filter: Option<String>,
+    /// Add the local process on the other end of each connection.
+    pub peers: bool,
     pub watch: bool,
     pub interval_ms: Option<u64>,
     pub duration_s: Option<u64>,
@@ -68,6 +71,7 @@ fn parse(args: &[String]) -> Result<CliArgs, String> {
         csv: false,
         numeric: false,
         filter: None,
+        peers: false,
         watch: false,
         interval_ms: None,
         duration_s: None,
@@ -80,6 +84,7 @@ fn parse(args: &[String]) -> Result<CliArgs, String> {
             "-a" => parsed.all = true,
             "-c" => parsed.csv = true,
             "-n" => parsed.numeric = true,
+            "--peers" => parsed.peers = true,
             "--watch" => parsed.watch = true,
             "--interval" => {
                 let range = watch::MIN_INTERVAL_MS..=watch::MAX_INTERVAL_MS;
@@ -164,6 +169,9 @@ fn run(args: &CliArgs) -> Result<bool, String> {
     }
 
     let mut eps = snapshot().map_err(|e| e.0)?;
+    // Matched on the whole snapshot: the other end of a connection is
+    // usually a process the filters below would drop.
+    let peers = args.peers.then(|| peer_labels(&eps));
     if !roots.is_empty() {
         // One scan: members are the roots and whatever descends from them
         // right now. Only a watch can keep a child that is re-parented later.
@@ -178,8 +186,39 @@ fn run(args: &CliArgs) -> Result<bool, String> {
         eps.retain(|e| filter.matches(e));
     }
 
-    print_rows(&eps, args.csv, args.numeric, lookup_ip);
+    print_rows(&eps, args.csv, args.numeric, peers.as_ref(), lookup_ip);
     Ok(true)
+}
+
+/// `name[pid]` for each process holding the other end, lowest PID first.
+/// A listener or binding match is marked: it names who would receive, not
+/// a socket seen holding this connection. Names are untrusted text.
+fn peer_label(peer: &LocalPeer, names: &HashMap<u32, String>) -> String {
+    let mut label = peer
+        .pids
+        .iter()
+        .map(|pid| {
+            let name = names.get(pid).map_or("?", String::as_str);
+            format!("{name}[{pid}]")
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    if peer.total > peer.pids.len() {
+        label.push_str(&format!(" +{} more", peer.total - peer.pids.len()));
+    }
+    match peer.via {
+        Via::Connection => {}
+        Via::Listener | Via::Binding => label.push_str(&format!(" ({})", peer.via.as_str())),
+    }
+    label
+}
+
+fn peer_labels(eps: &[Endpoint]) -> HashMap<EndpointKey, String> {
+    let names: HashMap<u32, String> = eps.iter().map(|e| (e.key.pid, e.process.clone())).collect();
+    local_peers(eps)
+        .into_iter()
+        .map(|(key, peer)| (key, peer_label(&peer, &names)))
+        .collect()
 }
 
 /// Watch output is every endpoint, numeric, as JSON Lines: `-a` and `-n`
@@ -210,10 +249,13 @@ fn run_watch(
     }
 }
 
+/// `peers` adds a trailing Peer column; `None` leaves the output as it
+/// has always been.
 fn print_rows(
     eps: &[Endpoint],
     csv: bool,
     numeric: bool,
+    peers: Option<&HashMap<EndpointKey, String>>,
     mut lookup: impl FnMut(IpAddr) -> Option<Resolved>,
 ) {
     let mut cache = HashMap::new();
@@ -228,17 +270,33 @@ fn print_rows(
     };
 
     if csv {
-        println!("Process,PID,Proto,Dir,Local,Remote,State,Path");
+        println!("{}", csv_header(peers.is_some()));
     }
     for e in eps {
-        print_row(e, csv, &mut name);
+        let peer = peers.map(|labels| labels.get(&e.key).map_or("", String::as_str));
+        println!("{}", row(e, csv, peer, &mut name));
     }
 }
 
-fn print_row(e: &Endpoint, csv: bool, name: &mut dyn FnMut(IpAddr) -> Option<Resolved>) {
+fn csv_header(peers: bool) -> &'static str {
+    if peers {
+        "Process,PID,Proto,Dir,Local,Remote,State,Path,Peer"
+    } else {
+        "Process,PID,Proto,Dir,Local,Remote,State,Path"
+    }
+}
+
+/// One output line. `peer` is `Some` when the Peer column was asked for,
+/// empty when this endpoint has no local peer.
+fn row(
+    e: &Endpoint,
+    csv: bool,
+    peer: Option<&str>,
+    name: &mut dyn FnMut(IpAddr) -> Option<Resolved>,
+) -> String {
     let (local, remote) = format_endpoints(e, name);
     if csv {
-        println!(
+        let mut line = format!(
             "{},{},{},{},{},{},{},{}",
             csv_escape(&e.process),
             e.key.pid,
@@ -249,8 +307,19 @@ fn print_row(e: &Endpoint, csv: bool, name: &mut dyn FnMut(IpAddr) -> Option<Res
             e.state_label(),
             csv_escape(&e.path)
         );
+        if let Some(peer) = peer {
+            line.push(',');
+            line.push_str(&csv_escape(peer));
+        }
+        line
     } else {
-        println!("{}", text_row(e, &local, &remote));
+        let mut line = text_row(e, &local, &remote);
+        if let Some(peer) = peer.filter(|label| !label.is_empty()) {
+            // After the path, which has no fixed width.
+            line.push_str("  peer=");
+            line.push_str(&sanitize_clipboard_text(peer));
+        }
+        line
     }
 }
 
@@ -302,6 +371,7 @@ fn print_help() {
          \x20 -c             CSV\n\
          \x20 -n             numeric addresses (no reverse DNS)\n\
          \x20 --tree PID     only this process and its descendants; repeat for more roots\n\
+         \x20 --peers        add the local process on the other end (always on with --watch)\n\
          \x20 --watch        JSON Lines events until interrupted: every endpoint, never DNS\n\
          \x20 --interval MS  time between watch samples, 50 to 60000 (default 1000)\n\
          \x20 --for SECONDS  end the watch after this long, 1 to 86400\n"
@@ -323,7 +393,7 @@ mod tests {
         assert!(!parsed.csv);
         assert!(!parsed.numeric);
         assert_eq!(parsed.filter, None);
-        assert!(!parsed.watch && parsed.tree.is_empty());
+        assert!(!parsed.watch && !parsed.peers && parsed.tree.is_empty());
         assert_eq!((parsed.interval_ms, parsed.duration_s), (None, None));
     }
 
@@ -453,6 +523,79 @@ mod tests {
     }
 
     #[test]
+    fn peers_flag_adds_a_trailing_column_and_leaves_default_output_alone() {
+        assert!(
+            parse(&args(&["netboard", "--cli", "--peers"]))
+                .unwrap()
+                .peers
+        );
+        assert!(
+            parse(&args(&["netboard", "--watch", "--peers"]))
+                .unwrap()
+                .peers
+        );
+        assert_eq!(
+            csv_header(false),
+            "Process,PID,Proto,Dir,Local,Remote,State,Path"
+        );
+        assert_eq!(
+            csv_header(true),
+            "Process,PID,Proto,Dir,Local,Remote,State,Path,Peer"
+        );
+
+        let client = endpoint("127.0.0.1:50000", "127.0.0.1:8080");
+        let mut server = endpoint("127.0.0.1:8080", "127.0.0.1:50000");
+        server.key.pid = 77;
+        server.process = "=srv,\u{202E}x".into();
+        let away = endpoint("192.0.2.10:50001", "198.51.100.7:443");
+        let eps = [client.clone(), server, away.clone()];
+        let labels = peer_labels(&eps);
+        assert_eq!(labels.len(), 2, "only the loopback pair has peers");
+        assert_eq!(labels[&client.key], "=srv,\u{202E}x[77]");
+
+        let mut none = |_| None;
+        let peer = Some(labels[&client.key].as_str());
+        // CSV keeps the raw name inside quoting, with the formula guard.
+        assert_eq!(
+            row(&client, true, peer, &mut none),
+            "example,42,TCP4,Out,127.0.0.1:50000,127.0.0.1:8080,ESTABLISHED,,\
+             \"'=srv,\u{202E}x[77]\""
+        );
+        assert!(row(&away, true, Some(""), &mut none).ends_with(",ESTABLISHED,,"));
+        assert!(row(&away, true, None, &mut none).ends_with(",ESTABLISHED,"));
+        // Text output cannot be reordered by the peer's name.
+        let text = row(&client, false, peer, &mut none);
+        assert!(text.ends_with("  peer==srv, x[77]"), "{text:?}");
+        assert!(!row(&away, false, Some(""), &mut none).contains("peer="));
+        assert_eq!(
+            row(&client, false, None, &mut none),
+            text_row(&client, "127.0.0.1:50000", "127.0.0.1:8080")
+        );
+    }
+
+    #[test]
+    fn peer_labels_mark_fallbacks_and_shared_sockets() {
+        let names = HashMap::from([(7, "nginx".to_string())]);
+        let peer = |via, pids: &[u32], total| LocalPeer {
+            via,
+            pids: pids.to_vec(),
+            total,
+        };
+        assert_eq!(
+            peer_label(&peer(Via::Connection, &[7], 1), &names),
+            "nginx[7]"
+        );
+        assert_eq!(
+            peer_label(&peer(Via::Listener, &[7, 8], 12), &names),
+            "nginx[7]; ?[8] +10 more (listener)"
+        );
+        assert_eq!(
+            peer_label(&peer(Via::Binding, &[7], 1), &names),
+            "nginx[7] (binding)"
+        );
+    }
+
+    #[test]
     fn every_tree_root_must_be_identified() {
         let known = |pid: u32| {
             (pid == 42).then_some(ProcIdentity {
@@ -533,7 +676,7 @@ mod tests {
                 }),
             ] {
                 let mut calls = Vec::new();
-                print_rows(&eps, csv, false, |ip| {
+                print_rows(&eps, csv, false, None, |ip| {
                     calls.push(ip);
                     answer.clone()
                 });
@@ -579,9 +722,10 @@ mod tests {
                 ],
                 csv,
                 true,
+                None,
                 |_| panic!("numeric output must not resolve names"),
             );
-            print_rows(&[endpoint("0.0.0.0:0", "[::]:0")], csv, false, |_| {
+            print_rows(&[endpoint("0.0.0.0:0", "[::]:0")], csv, false, None, |_| {
                 panic!("unspecified addresses must not resolve names")
             });
         }

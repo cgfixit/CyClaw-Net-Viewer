@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::cli::Filter;
+use crate::peers::{local_peers, Via};
 use crate::procinfo::{self, ProcIdentity, ProcStart};
 use crate::proctree::{Change, Tracker};
 use crate::snapshot::{
@@ -86,6 +87,30 @@ enum Kind {
 
 type Key = (EndpointKey, Option<ProcStart>);
 
+/// A process holding the other end of a connection on this machine.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct PeerProcess {
+    pid: u32,
+    start: Option<ProcStart>,
+    name: String,
+    path: String,
+    /// False when the watch is scoped to a tree and this process is outside it.
+    in_scope: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct Peer {
+    via: Via,
+    processes: Vec<PeerProcess>,
+    total: usize,
+}
+
+/// An endpoint as one sample saw it.
+struct Seen {
+    endpoint: Endpoint,
+    peer: Option<Peer>,
+}
+
 /// Run until the duration ends, a stop is requested, or the watched tree
 /// has exited. A write error ends the watch and is returned to the caller.
 pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::Result<Summary> {
@@ -96,7 +121,7 @@ pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::R
     let mut tracker = (!cfg.roots.is_empty()).then(|| Tracker::new(&cfg.roots));
     // Name and path as first seen, kept so an exit can still name the process.
     let mut tracked: HashMap<u32, (String, String)> = HashMap::new();
-    let mut prev: HashMap<Key, Endpoint> = HashMap::new();
+    let mut prev: HashMap<Key, Seen> = HashMap::new();
     let mut baseline = true;
     let (mut samples, mut failed) = (0u64, 0u64);
     let mut last_ok: Option<Duration> = None;
@@ -124,8 +149,8 @@ pub fn run<S: Source, W: Write>(cfg: &Config, src: &mut S, out: &mut W) -> io::R
                     writeln!(out, "{line}")?;
                     tracked.insert(identity.pid, names);
                 }
-                for (kind, endpoint, start) in delta(&prev, &next, baseline) {
-                    writeln!(out, "{}", endpoint_line(&stamp, kind, endpoint, start))?;
+                for (kind, seen, start) in delta(&prev, &next, baseline) {
+                    writeln!(out, "{}", endpoint_line(&stamp, kind, seen, start))?;
                 }
                 prev = next;
                 for change in &changes {
@@ -197,9 +222,23 @@ fn sample<S: Source>(
     src: &mut S,
     tracker: Option<&mut Tracker>,
     cfg: &Config,
-    prev: &HashMap<Key, Endpoint>,
-) -> Result<(Vec<Change>, HashMap<Key, Endpoint>), String> {
+    prev: &HashMap<Key, Seen>,
+) -> Result<(Vec<Change>, HashMap<Key, Seen>), String> {
     let mut endpoints = src.endpoints()?;
+    // Peers are matched on the whole sample, before any narrowing: the
+    // other end of a watched connection is usually outside the scope.
+    let mut peers = local_peers(&endpoints);
+    let mut owners: HashMap<u32, (String, String)> = peers
+        .values()
+        .flat_map(|peer| &peer.pids)
+        .map(|pid| (*pid, Default::default()))
+        .collect();
+    for e in &endpoints {
+        if let Some(names) = owners.get_mut(&e.key.pid).filter(|n| n.0.is_empty()) {
+            *names = (e.process.clone(), e.path.clone());
+        }
+    }
+
     let (changes, tree) = match tracker {
         Some(tree) => {
             let table = src.processes()?;
@@ -221,57 +260,78 @@ fn sample<S: Source>(
         .filter_map(|(key, start)| start.map(|s| (key, s)))
         .collect();
     let mut looked_up: HashMap<u32, Option<ProcStart>> = HashMap::new();
+    let mut start_of = |pid: u32| match tree.and_then(|tree| tree.start_of(pid)) {
+        Some(start) => Some(start),
+        None => *looked_up
+            .entry(pid)
+            .or_insert_with(|| src.identity(pid).map(|identity| identity.start)),
+    };
     let mut next = HashMap::with_capacity(endpoints.len());
     for endpoint in endpoints {
-        let pid = endpoint.key.pid;
-        let start = match tree {
-            Some(tree) => tree.start_of(pid),
-            None => *looked_up
-                .entry(pid)
-                .or_insert_with(|| src.identity(pid).map(|identity| identity.start)),
-        }
-        .or_else(|| known.get(&endpoint.key).copied());
+        let start = start_of(endpoint.key.pid).or_else(|| known.get(&endpoint.key).copied());
+        let peer = peers.remove(&endpoint.key).map(|found| Peer {
+            via: found.via,
+            total: found.total,
+            processes: found
+                .pids
+                .iter()
+                .map(|&pid| {
+                    let (name, path) = owners.get(&pid).cloned().unwrap_or_default();
+                    PeerProcess {
+                        pid,
+                        start: start_of(pid),
+                        name,
+                        path,
+                        in_scope: tree.is_none_or(|tree| tree.contains(pid)),
+                    }
+                })
+                .collect(),
+        });
         // Duplicated descriptors of one socket are one endpoint.
         next.entry((endpoint.key.clone(), start))
-            .or_insert(endpoint);
+            .or_insert(Seen { endpoint, peer });
     }
     Ok((changes, next))
 }
 
 /// Events between two samples, in a stable order: by PID, protocol and
-/// addresses, with a close ahead of an open of the same tuple.
+/// addresses, with a close ahead of an open of the same tuple. A peer that
+/// appears or changes on an endpoint already reported is not an event.
 fn delta<'a>(
-    prev: &'a HashMap<Key, Endpoint>,
-    next: &'a HashMap<Key, Endpoint>,
+    prev: &'a HashMap<Key, Seen>,
+    next: &'a HashMap<Key, Seen>,
     baseline: bool,
-) -> Vec<(Kind, &'a Endpoint, Option<ProcStart>)> {
+) -> Vec<(Kind, &'a Seen, Option<ProcStart>)> {
     let mut events = Vec::new();
-    for (key, endpoint) in next {
+    for (key, seen) in next {
         let kind = match prev.get(key) {
             None if baseline => Kind::Existing,
             None => Kind::New,
-            Some(old) if old.state != endpoint.state => Kind::Changed(old.state),
+            Some(old) if old.endpoint.state != seen.endpoint.state => {
+                Kind::Changed(old.endpoint.state)
+            }
             Some(_) => continue,
         };
-        events.push((kind, endpoint, key.1));
+        events.push((kind, seen, key.1));
     }
-    for (key, endpoint) in prev {
+    for (key, seen) in prev {
         if !next.contains_key(key) {
-            events.push((Kind::Closed, endpoint, key.1));
+            events.push((Kind::Closed, seen, key.1));
         }
     }
-    events.sort_by_key(|(kind, endpoint, _)| {
+    events.sort_by_key(|(kind, seen, _)| {
         let rank = match kind {
             Kind::Closed => 0u8,
             Kind::Changed(_) => 1,
             Kind::Existing => 2,
             Kind::New => 3,
         };
+        let key = &seen.endpoint.key;
         (
-            endpoint.key.pid,
-            endpoint.key.proto == Proto::Udp,
-            endpoint.key.local,
-            endpoint.key.remote,
+            key.pid,
+            key.proto == Proto::Udp,
+            key.local,
+            key.remote,
             rank,
         )
     });
@@ -310,7 +370,10 @@ fn start_line(cfg: &Config, stamp: &str) -> String {
         .raw("roots", &format!("[{}]", roots.join(",")))
         .raw("filter", &filter)
         // Chosen by whoever started the process, not by this tool.
-        .raw("untrusted_fields", r#"["process.name","process.path"]"#)
+        .raw(
+            "untrusted_fields",
+            r#"["process.name","process.path","peer.processes.name","peer.processes.path"]"#,
+        )
         .finish()
 }
 
@@ -338,7 +401,33 @@ fn process_line(
     line.raw("process", &process).finish()
 }
 
-fn endpoint_line(stamp: &str, kind: Kind, e: &Endpoint, start: Option<ProcStart>) -> String {
+fn peer_json(peer: Option<&Peer>) -> String {
+    let Some(peer) = peer else {
+        return "null".into();
+    };
+    let processes: Vec<String> = peer
+        .processes
+        .iter()
+        .map(|process| {
+            Json::object()
+                .number("pid", u64::from(process.pid))
+                .optional("start", process.start.map(start_stamp).as_deref())
+                .string("name", &process.name)
+                .string("path", &process.path)
+                .boolean("in_scope", process.in_scope)
+                .finish()
+        })
+        .collect();
+    Json::object()
+        .string("via", peer.via.as_str())
+        // Every distinct owner of the other end; `processes` lists the first few.
+        .number("process_count", peer.total as u64)
+        .raw("processes", &format!("[{}]", processes.join(",")))
+        .finish()
+}
+
+fn endpoint_line(stamp: &str, kind: Kind, seen: &Seen, start: Option<ProcStart>) -> String {
+    let e = &seen.endpoint;
     let event = match kind {
         Kind::Existing => "existing",
         Kind::New => "new",
@@ -391,7 +480,9 @@ fn endpoint_line(stamp: &str, kind: Kind, e: &Endpoint, start: Option<ProcStart>
     if let Kind::Changed(before) = kind {
         line = line.optional("prev_state", before.map(TcpState::as_str));
     }
-    line.boolean("off_box", is_offbox(e.key.remote)).finish()
+    line.boolean("off_box", is_offbox(e.key.remote))
+        .raw("peer", &peer_json(seen.peer.as_ref()))
+        .finish()
 }
 
 fn baseline_line(stamp: &str, endpoints: usize, processes: Option<usize>) -> String {
@@ -829,7 +920,8 @@ mod tests {
                     "{{\"type\":\"start\",\"schema\":\"netboard.watch/1\",\"version\":\"{}\",\
                      \"ts\":\"2023-11-14T22:13:20.000Z\",\"interval_ms\":1000,\"duration_s\":2,\
                      \"roots\":[],\"filter\":null,\
-                     \"untrusted_fields\":[\"process.name\",\"process.path\"]}}",
+                     \"untrusted_fields\":[\"process.name\",\"process.path\",\
+                     \"peer.processes.name\",\"peer.processes.path\"]}}",
                     env!("CARGO_PKG_VERSION")
                 ),
                 "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":0,\"processes\":null}"
@@ -884,7 +976,7 @@ mod tests {
                  \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
                  \"remote\":{\"ip\":\"127.0.0.1\",\"port\":80},\"state\":\"ESTABLISHED\",\
-                 \"off_box\":false}",
+                 \"off_box\":false,\"peer\":null}",
                 "{\"type\":\"baseline\",\"ts\":\"2023-11-14T22:13:20.000Z\",\"endpoints\":1,\
                  \"processes\":null}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:21.000Z\",\"event\":\"new\",\
@@ -892,25 +984,25 @@ mod tests {
                  \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
                  \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"SYN_SENT\",\
-                 \"off_box\":true}",
+                 \"off_box\":true,\"peer\":null}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:22.000Z\",\"event\":\"changed\",\
                  \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
                  \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
                  \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"ESTABLISHED\",\
-                 \"prev_state\":\"SYN_SENT\",\"off_box\":true}",
+                 \"prev_state\":\"SYN_SENT\",\"off_box\":true,\"peer\":null}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:23.000Z\",\"event\":\"closed\",\
                  \"process\":{\"pid\":7,\"start\":\"2023-11-14T22:11:47.000005Z\",\"name\":\"proc7\",\
                  \"path\":\"/bin/proc7\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
                  \"remote\":{\"ip\":\"127.0.0.1\",\"port\":80},\"state\":\"ESTABLISHED\",\
-                 \"off_box\":false}",
+                 \"off_box\":false,\"peer\":null}",
                 "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:23.000Z\",\"event\":\"closed\",\
                  \"process\":{\"pid\":9,\"start\":\"2023-11-14T22:11:49.000005Z\",\"name\":\"proc9\",\
                  \"path\":\"/bin/proc9\"},\"proto\":\"tcp\",\"ip_version\":4,\"dir\":\"out\",\
                  \"local\":{\"ip\":\"127.0.0.1\",\"port\":6000},\
                  \"remote\":{\"ip\":\"192.0.2.7\",\"port\":443},\"state\":\"ESTABLISHED\",\
-                 \"off_box\":true}",
+                 \"off_box\":true,\"peer\":null}",
             ]
         );
     }
@@ -933,18 +1025,20 @@ mod tests {
              \"process\":{\"pid\":3,\"start\":null,\"name\":\"proc3\",\"path\":\"/bin/proc3\"},\
              \"proto\":\"udp\",\"ip_version\":6,\"dir\":\"unknown\",\
              \"local\":{\"ip\":\"::\",\"port\":5353},\"remote\":{\"ip\":\"::\",\"port\":0},\
-             \"state\":null,\"off_box\":false}"
+             \"state\":null,\"off_box\":false,\"peer\":null}"
         );
     }
 
     #[test]
     fn duplicate_descriptors_are_one_endpoint_and_a_reused_pid_is_another() {
         let a = tcp(7, 5000, "192.0.2.7:443", TcpState::Established);
-        let prev: HashMap<Key, Endpoint> =
-            HashMap::from([((a.key.clone(), Some(start(1))), a.clone())]);
+        let seen = || Seen {
+            endpoint: a.clone(),
+            peer: None,
+        };
+        let prev: HashMap<Key, Seen> = HashMap::from([((a.key.clone(), Some(start(1))), seen())]);
         // Same PID and tuple, different process start: close then open.
-        let next: HashMap<Key, Endpoint> =
-            HashMap::from([((a.key.clone(), Some(start(2))), a.clone())]);
+        let next: HashMap<Key, Seen> = HashMap::from([((a.key.clone(), Some(start(2))), seen())]);
         let kinds: Vec<(Kind, Option<ProcStart>)> = delta(&prev, &next, false)
             .into_iter()
             .map(|(kind, _, started)| (kind, started))
@@ -1072,6 +1166,75 @@ mod tests {
         assert!(lines[0]
             .contains("\"roots\":[{\"pid\":100,\"start\":\"2023-11-14T22:13:20.000005Z\"}]"));
         assert!(lines[8].contains("\"reason\":\"scope_exited\""));
+    }
+
+    #[test]
+    fn a_local_peer_is_named_even_when_it_is_outside_the_watched_tree() {
+        let (root, server) = (proc(100, 1), proc(900, 1));
+        let client = tcp(100, 5000, "127.0.0.1:11434", TcpState::Established);
+        let mut accepted = tcp(900, 11434, "127.0.0.1:5000", TcpState::Established);
+        accepted.dir = Dir::In;
+        let mut listener = tcp(900, 11434, "0.0.0.0:0", TcpState::Listen);
+        listener.dir = Dir::Listen;
+        let ticks = || {
+            vec![
+                tick(vec![listener.clone()], vec![root, server]),
+                // Connected, not accepted yet: only the listener is visible.
+                tick(vec![client.clone(), listener.clone()], vec![root, server]),
+                tick(
+                    vec![client.clone(), accepted.clone(), listener.clone()],
+                    vec![root, server],
+                ),
+                tick(vec![listener.clone()], vec![server]),
+            ]
+        };
+        let mut cfg = config(1000, None);
+        cfg.roots = vec![root];
+        let (summary, lines) = watch(&cfg, &mut Fake::new(ticks()));
+        assert_eq!(summary.reason, EndReason::ScopeExited);
+        let events: Vec<&String> = lines
+            .iter()
+            .filter(|line| line.contains("\"type\":\"endpoint\""))
+            .collect();
+        assert_eq!(events.len(), 2, "{lines:#?}");
+        assert_eq!(
+            events[0].as_str(),
+            "{\"type\":\"endpoint\",\"ts\":\"2023-11-14T22:13:21.000Z\",\"event\":\"new\",\
+             \"process\":{\"pid\":100,\"start\":\"2023-11-14T22:13:20.000005Z\",\
+             \"name\":\"proc100\",\"path\":\"/bin/proc100\"},\"proto\":\"tcp\",\"ip_version\":4,\
+             \"dir\":\"out\",\"local\":{\"ip\":\"127.0.0.1\",\"port\":5000},\
+             \"remote\":{\"ip\":\"127.0.0.1\",\"port\":11434},\"state\":\"ESTABLISHED\",\
+             \"off_box\":false,\"peer\":{\"via\":\"listener\",\"process_count\":1,\
+             \"processes\":[{\"pid\":900,\"start\":\"2023-11-14T22:26:40.000005Z\",\
+             \"name\":\"proc900\",\"path\":\"/bin/proc900\",\"in_scope\":false}]}}"
+        );
+        // The accept in the next sample is not an event; the close reports
+        // the peer as it was last seen.
+        assert!(events[1].contains("\"event\":\"closed\""));
+        assert!(events[1].contains("\"peer\":{\"via\":\"connection\",\"process_count\":1,"));
+        // The server's own sockets are outside the tree and are not reported.
+        assert!(!lines
+            .iter()
+            .any(|line| line.contains("\"process\":{\"pid\":900")));
+
+        // Without a tree every process is in scope, and each end names the other.
+        let mut src = Fake::new(ticks());
+        let (_, lines) = watch(&config(1000, Some(3)), &mut src);
+        let of = |event: &str, pid: u32, remote_port: u16| {
+            lines
+                .iter()
+                .find(|line| {
+                    line.contains(&format!("\"event\":\"{event}\""))
+                        && line.contains(&format!("\"process\":{{\"pid\":{pid},"))
+                        && line.contains(&format!("\"port\":{remote_port}}},\"state\""))
+                })
+                .unwrap_or_else(|| panic!("{event} {pid} missing from {lines:#?}"))
+        };
+        assert!(of("new", 100, 11434).contains("\"in_scope\":true}]}}"));
+        let served = of("new", 900, 5000);
+        assert!(served.contains("\"peer\":{\"via\":\"connection\""));
+        assert!(served.contains("\"processes\":[{\"pid\":100,"));
+        assert!(of("existing", 900, 0).ends_with("\"peer\":null}"));
     }
 
     #[test]
