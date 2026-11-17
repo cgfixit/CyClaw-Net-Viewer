@@ -1,0 +1,18 @@
+netboard-policy 1
+# Zero-egress starting point for CG-agent-harness on one Mac.
+# Ports are from its shipped assets/config.default.yaml; check yours.
+# Web search, Firecrawl, hosted providers and Git publication all reach
+# public hosts, so with any of them enabled this policy reports violations.
+# That is the point: add an allow rule only for egress you mean to permit.
+
+# Local models: Ollama and LM Studio.
+allow loopback proto tcp port 11434
+allow loopback proto tcp port 1234
+
+# The console (`serve`) and its own loopback clients.
+allow loopback proto tcp port 8790
+listen loopback proto tcp port 8790
+
+# The inbound MCP memory gateway ships disabled; uncomment if you enable it.
+# listen loopback proto tcp port 8791
+# allow loopback proto tcp port 8791

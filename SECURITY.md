@@ -39,6 +39,42 @@ check run requiring write access.
   Misses are retried after two minutes. Cached names are still untrusted
   labels, not verified peer identities. The GUI resolver keeps at most 4096 completed
   addresses; evicted names may be looked up again.
+- Watch mode (`--watch`) only observes. It never resolves a name, opens no
+  socket of its own, and writes to stdout alone. Its stream holds process
+  names, executable paths, PIDs and peer addresses: redirect it under
+  `umask 077`, because stdout does not get the GUI's private-file policy.
+  Names and paths, of a process and of its local peers, are attacker-chosen
+  and are declared in the `start` record's `untrusted_fields`; JSON strings
+  escape controls, bidi and
+  zero-width characters so a hostile name cannot forge a record or reorder
+  a terminal line, but the text itself is unchanged for a parser. Do not
+  hand a capture to a language model as trusted input. A watch is a series
+  of samples: sockets shorter than the gap between two samples are not
+  seen, a failed sample observes nothing, and an empty stream does not
+  establish that nothing was sent. Exit 0 means every sample succeeded,
+  not that the watched processes were quiet.
+- `--policy FILE` reads one operator-written file: a regular file of at
+  most 64 KiB of UTF-8, refused before sampling if it does not parse, with
+  an error that names the line and never echoes its text. No rule ships in
+  the binary; `docs/examples/` holds starting points. A policy only
+  classifies what a watch saw. It blocks nothing and signals nothing, and
+  its `pass` verdict (exit 0) means no violation was seen, with the
+  sampling gap above. A process the watch cannot read makes the verdict
+  `incomplete` (exit 2) instead of passing silently.
+- `--tree PID` follows observed parentage, keyed on PID plus kernel start
+  time. It is not containment: a process whose parent exits before a scan
+  sees both, or that runs as another user, is not followed (one running as
+  another user is counted in `unreadable_processes`). A root that
+  cannot be identified is refused (exit 2) instead of printing nothing.
+  SIGINT and SIGTERM end a watch after its `end` record; the handler only
+  sets a flag.
+- Sockets are read with first-party libproc calls in `src/sockets.rs`. The
+  kernel record layout is asserted at compile time and only a full-length
+  answer is read, so a descriptor that closes mid-scan is skipped rather
+  than read from stale memory. A local peer (`--peers`, watch `peer`) is a
+  match within one snapshot: it names who held the other end then, it is
+  not found when that process cannot be read, and a null peer does not
+  mean a connection stayed on this Mac.
 - GUI CSV exports go to `~/Downloads` (or `~` when that folder is missing)
   and are created exclusively with mode 0600, without following
   existing symlinks. Existing files are never overwritten. A failed write

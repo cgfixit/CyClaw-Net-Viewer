@@ -59,6 +59,54 @@ The default test emulates outgoing traffic on loopback. It does not test a
 physical network interface. LAN mode can exercise an off-machine route, but
 NetViewer remains a socket observer, not an egress filter or packet capture.
 It cannot prove absence of short-lived traffic between snapshots or that an
-OS sandbox blocks all connections. UDP remote peers are unavailable through
-the current Darwin socket library and are covered separately as Unknown
-direction in `tests/live_listen.rs`. No CyClaw AI runtime is required.
+OS sandbox blocks all connections. UDP is covered separately in
+`tests/live_listen.rs`: a connected UDP socket reports its peer, an
+unconnected one reports none, and both have Unknown direction. The same
+file checks IPv6 loopback and an IPv4 client on an IPv6 listener. No CyClaw
+AI runtime is required.
+
+## Watch and process-tree fixtures
+
+`tests/watch.rs` drives the real binary in `--watch` mode with the same kind
+of native Bash loopback fixture, and is part of `cargo test --locked`. Run
+it alone with:
+
+```bash
+cargo test --locked --test watch
+```
+
+A pass requires:
+
+1. A watch filtered to an idle shell reports its `baseline`, then exactly
+   one `new` and one `closed` event for the connection the shell opens and
+   closes, with the same PID and kernel start time in both.
+2. SIGTERM ends an unbounded watch with an `end` record (`interrupted`),
+   exit status 0, and nothing on stderr.
+3. With `--tree` on a root shell, a connection held by its child is in the
+   baseline and attributed to the child. After the root exits and launchd
+   adopts the child, a second connection from that child is still reported,
+   with the identity it had before. When the child exits the watch ends by
+   itself with `scope_exited`.
+4. A one-shot `--cli --tree` snapshot of the test process contains that
+   process's own loopback connection.
+5. The record for a connection names the local process on the other end:
+   the listener while the connection is still queued, the accepted socket's
+   owner afterwards, marked out of scope when it is outside the tree. A
+   `--cli --peers` snapshot shows the same in its `Peer` column.
+6. Invalid watch arguments and an unidentifiable `--tree` PID exit 2 before
+   anything is sampled, and a reader that closes the pipe ends the watch
+   without a panic.
+7. With `--policy`, a tree watch of a shell that connects to a loopback
+   listener exits 0 when a rule permits that peer, and exits 1 with exactly
+   one `violation` record when none does. Endpoint records carry
+   `remote_class`, `local_class` and `exposed`.
+8. A bounded policy watch stopped by SIGTERM exits 2 with `interrupted`,
+   and a policy file that does not parse exits 2 before anything is sampled.
+9. Run as an ordinary user, an unscoped watch counts processes it cannot
+   read, and a tree watch of a shell that runs `sudo -n /bin/sleep` reports
+   that descendant as `unreadable` and ends `incomplete` (exit 2). Both
+   skip themselves under root, and the second skips without passwordless
+   `sudo`.
+
+These fixtures show that the stream reports what a sample can see. They do
+not measure how short a connection can be and still be caught.

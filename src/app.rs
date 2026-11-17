@@ -10,6 +10,7 @@ use egui_extras::{Column, TableBuilder};
 use crate::diff::{diff, Highlight, Row};
 use crate::dns::Resolver;
 use crate::kill;
+use crate::netclass;
 use crate::ptr::Fallback;
 use crate::snapshot::{
     fmt_addr, is_offbox, sanitize_clipboard_text, snapshot, EndpointKey, Proto, TcpState,
@@ -223,9 +224,16 @@ fn wait_tick(shared: &Shared) {
     }
 }
 
+/// True when an endpoint reaches off this Mac: its peer is off-box, or it
+/// is a listener or bound UDP socket that peers off this Mac can reach.
+fn reaches_offbox(e: &crate::Endpoint) -> bool {
+    is_offbox(e.key.remote) || netclass::exposure(e).is_some()
+}
+
+/// Event colors always win; the off-box fill applies to stable rows only.
 fn hl_colors(
     h: Highlight,
-    remote: std::net::SocketAddr,
+    offbox: bool,
     color_offbox: bool,
     dark: bool,
 ) -> Option<(Color32, Color32)> {
@@ -235,7 +243,7 @@ fn hl_colors(
         Highlight::NewIn => Some(palette.new_in),
         Highlight::Changed => Some(palette.changed),
         Highlight::Deleted => Some(palette.deleted),
-        Highlight::None if color_offbox && is_offbox(remote) => Some(palette.offbox),
+        Highlight::None if color_offbox && offbox => Some(palette.offbox),
         Highlight::None => None,
     }
 }
@@ -282,9 +290,21 @@ impl eframe::App for NetBoardApp {
                     .iter()
                     .filter(|r| is_offbox(r.endpoint.key.remote))
                     .count();
+                let exposed = visible
+                    .iter()
+                    .filter(|r| netclass::exposure(&r.endpoint).is_some())
+                    .count();
                 ui.label(
-                    RichText::new(format!("{} endpoints · {} off-box", visible.len(), off))
-                        .strong(),
+                    RichText::new(format!(
+                        "{} endpoints · {} off-box · {} exposed",
+                        visible.len(),
+                        off,
+                        exposed
+                    ))
+                    .strong(),
+                )
+                .on_hover_text(
+                    "Exposed: listeners and bound UDP sockets on a wildcard or non-loopback address, reachable from off this Mac",
                 );
                 let hidden = rows.len() - visible.len();
                 if hidden > 0 {
@@ -430,12 +450,13 @@ impl NetBoardApp {
         ui.checkbox(&mut self.resolve_names, "Resolve names").on_hover_text(
             "Reverse-DNS addresses (N). Sends PTR queries via the system resolver, LAN mDNS, and the optional fallback in Options. Names are untrusted labels; the IP stays visible.",
         );
-        ui.checkbox(&mut self.color_offbox, "Color remotes")
-            .on_hover_text("Orange fill for stable endpoints whose peer is off this Mac");
+        ui.checkbox(&mut self.color_offbox, "Color remotes").on_hover_text(
+            "Orange fill for stable endpoints whose peer is off this Mac, and for exposed listeners",
+        );
         ui.checkbox(&mut self.offbox_only, "Off-box only")
             .on_hover_text(
-                "Hide listeners, loopback and wildcard peers; show only traffic leaving this Mac",
-            );
+            "Show only traffic leaving this Mac and listeners reachable from off it; hide loopback",
+        );
         ui.separator();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if !self.filter.is_empty()
@@ -630,7 +651,7 @@ impl NetBoardApp {
                     row.set_selected(selected);
                     let (bg, fg) = match hl_colors(
                         r.highlight,
-                        r.endpoint.key.remote,
+                        reaches_offbox(&r.endpoint),
                         self.color_offbox,
                         dark,
                     ) {
@@ -791,7 +812,9 @@ impl NetBoardApp {
                 if !self.show_listen && r.endpoint.dir == crate::Dir::Listen {
                     return false;
                 }
-                if self.offbox_only && !is_offbox(r.endpoint.key.remote) {
+                // An exposed listener has no peer yet but is reachable from
+                // off this Mac, which is what this filter is for.
+                if self.offbox_only && !reaches_offbox(&r.endpoint) {
                     return false;
                 }
                 if f.is_empty() {
@@ -1126,6 +1149,83 @@ mod tests {
     }
 
     #[test]
+    fn offbox_only_keeps_exposed_listeners_and_drops_loopback_ones() {
+        use crate::{Dir, Endpoint, IpVer};
+        let endpoint = |pid, local: &str, remote: &str, state| Endpoint {
+            key: EndpointKey {
+                pid,
+                proto: Proto::Tcp,
+                ip_ver: IpVer::V4,
+                local: local.parse().unwrap(),
+                remote: remote.parse().unwrap(),
+            },
+            state: Some(state),
+            dir: if state == TcpState::Listen {
+                Dir::Listen
+            } else {
+                Dir::Out
+            },
+            process: "example".into(),
+            path: String::new(),
+        };
+        let rows = Arc::new(diff(
+            &[],
+            &[
+                endpoint(1, "0.0.0.0:22", "0.0.0.0:0", TcpState::Listen),
+                endpoint(2, "127.0.0.1:11434", "0.0.0.0:0", TcpState::Listen),
+                endpoint(3, "192.168.1.5:50000", "8.8.8.8:443", TcpState::Established),
+                endpoint(
+                    4,
+                    "127.0.0.1:50001",
+                    "127.0.0.1:11434",
+                    TcpState::Established,
+                ),
+            ],
+        ));
+        let mut app = NetBoardApp {
+            shared: Arc::new(Shared {
+                rows: Mutex::new(Arc::clone(&rows)),
+                err: Mutex::new(None),
+                paused: AtomicBool::new(false),
+                interval_ms: AtomicU64::new(1000),
+                kick: AtomicBool::new(false),
+            }),
+            resolver: Resolver::new(),
+            resolve_names: false,
+            filter: String::new(),
+            sort: SortCol::Pid,
+            sort_asc: true,
+            selected: None,
+            show_udp: true,
+            show_listen: true,
+            color_offbox: true,
+            offbox_only: true,
+            show_about: false,
+            pending_kill: None,
+            last_save: None,
+            interval_choice: 1000,
+            focus_filter: false,
+        };
+        let mut pids: Vec<u32> = app
+            .visible(&rows)
+            .iter()
+            .map(|r| r.endpoint.key.pid)
+            .collect();
+        pids.sort_unstable();
+        assert_eq!(pids, [1, 3]);
+        // Hiding listeners still hides an exposed one.
+        app.show_listen = false;
+        let pids: Vec<u32> = app
+            .visible(&rows)
+            .iter()
+            .map(|r| r.endpoint.key.pid)
+            .collect();
+        assert_eq!(pids, [3]);
+        assert!(reaches_offbox(&rows[0].endpoint));
+        assert!(!reaches_offbox(&rows[1].endpoint));
+    }
+
+    #[test]
     fn resolve_names_defaults_off_and_does_not_queue_lookups() {
         use crate::{Dir, Endpoint, IpVer};
         let endpoint = Endpoint {
@@ -1190,7 +1290,7 @@ mod tests {
 
     #[test]
     fn both_palettes_cover_events_and_preserve_offbox_precedence() {
-        let remote = "192.0.2.1:443".parse().unwrap();
+        let remote = true;
         for dark in [false, true] {
             let p = HighlightPalette::for_mode(dark);
             for (highlight, expected) in [
@@ -1207,15 +1307,7 @@ mod tests {
                 Some(p.offbox)
             );
             assert_eq!(hl_colors(Highlight::None, remote, false, dark), None);
-            assert_eq!(
-                hl_colors(
-                    Highlight::None,
-                    "127.0.0.1:443".parse().unwrap(),
-                    true,
-                    dark
-                ),
-                None
-            );
+            assert_eq!(hl_colors(Highlight::None, false, true, dark), None);
         }
     }
 

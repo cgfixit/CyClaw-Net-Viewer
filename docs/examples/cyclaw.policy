@@ -1,0 +1,12 @@
+netboard-policy 1
+# Offline starting point for CyClaw. Ports are from its shipped config.yaml.
+# Hybrid mode (Grok or Claude), the first-run model download and Dropbox
+# sync reach public hosts and are reported as violations under this policy.
+
+# The local model.
+allow loopback proto tcp port 11434
+
+# The RAG server on 127.0.0.1:8787 and loopback clients of it (the console,
+# Telegram and OpenTweet channels post to it over loopback).
+listen loopback proto tcp port 8787
+allow loopback proto tcp port 8787

@@ -58,8 +58,11 @@ cargo llvm-cov report --html
 
 Unit tests live beside private helpers in `src/`. Integration tests in
 `tests/` cover diff identity/lifecycle, private CSV exports, CLI subprocess
-exit codes/output, and live loopback sockets. Run an individual suite with
-`cargo test --locked --test cli` or `cargo test --locked --test export`.
+exit codes/output, live loopback sockets, and watch mode with `--tree`
+against real Bash children. Run an individual suite with
+`cargo test --locked --test cli`, `--test export`, or `--test watch`.
+The watch loop takes its sockets, process table and clock through
+`watch::Source`; script that for new stream behavior instead of sleeping.
 Keep fixtures synthetic, avoid public DNS, and test PID validation without
 sending signals. CLI snapshot tests filter an impossible PID to avoid
 printing host process data. Update tool versions and hashes together;

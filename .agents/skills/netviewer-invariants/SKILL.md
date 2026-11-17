@@ -19,8 +19,10 @@ python .agents/skills/netviewer-invariants/scripts/check_invariants.py
 Use `python3` when that is the interpreter. A non-zero exit is a broken
 step: fix or revert; do not weaken an assertion to go green. The script
 reads the live tree (no frozen SHAs). Re-read `SECURITY.md` for behavior
-the grep cannot see: confirmed SIGTERM of the owning PID, Off-box UDP
-remotes as `*:0`, numeric CLI `-n` skipping DNS, no analytics.
+the grep cannot see: confirmed SIGTERM of the owning PID, unconnected UDP
+remotes as `*:0`, numeric CLI `-n` skipping DNS, no analytics, and a
+watch that only observes (no DNS, no socket of its own, stdout only), and
+a `--policy` that only classifies: no shipped rules, verdict exits 0/1/2.
 
 Do not treat a Windows/Linux pass of this script as a Darwin runtime pass.
 Windows and Linux still cannot compile the crate; never remove

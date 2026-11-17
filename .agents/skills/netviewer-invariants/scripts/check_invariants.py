@@ -46,6 +46,8 @@ def main() -> int:
         lib = read(root, "src/lib.rs")
         kill = read(root, "src/kill.rs")
         export = read(root, "src/export.rs")
+        watch = read(root, "src/watch.rs")
+        sockets = read(root, "src/sockets.rs")
         ci = read(root, ".github/workflows/ci.yml")
         toolchain = read(root, "rust-toolchain.toml")
     except FileNotFoundError as err:
@@ -110,6 +112,70 @@ def main() -> int:
         "export_create_new_0600",
         ".create_new(true)" in export and ".mode(0o600)" in export,
         "src/export.rs must use create_new + mode 0o600",
+    )
+    check(
+        "watch_never_resolves_names",
+        re.search(r"\b(dns|ptr)::|lookup_ip|getnameinfo", watch) is None,
+        "src/watch.rs must not reach name resolution",
+    )
+    check(
+        "watch_schema_versioned",
+        re.search(r'pub const SCHEMA: &str = "netboard\.watch/\d+";', watch) is not None,
+        "src/watch.rs must declare a versioned SCHEMA",
+    )
+    check(
+        "watch_declares_untrusted_fields",
+        '"untrusted_fields"' in watch and "process.name" in watch and "process.path" in watch,
+        "watch start record must mark process name and path untrusted",
+    )
+    check(
+        "sockets_read_full_records_only",
+        "(got == size).then" in sockets and "MaybeUninit::<SocketFdInfo>::zeroed()" in sockets,
+        "src/sockets.rs must read a socket record only at full length, from zeroed storage",
+    )
+    check(
+        "sockets_layout_asserted",
+        "size_of::<SocketFdInfo>() == 792" in sockets
+        and "offset_of!(SocketInfo, soi_proto) == 240" in sockets,
+        "src/sockets.rs must keep its compile-time layout assertions",
+    )
+    policy = read(root, "src/policy.rs")
+    netclass = read(root, "src/netclass.rs")
+    check(
+        "policy_ships_no_rules",
+        "include_str!" not in policy
+        and "Default for Policy" not in policy
+        and "include_str!" not in watch,
+        "src/policy.rs must load rules only from the operator's --policy file",
+    )
+    check(
+        "policy_only_observes",
+        all(
+            token not in text
+            for text in (policy, netclass, watch)
+            for token in (
+                "libc::kill(",
+                "kill::",
+                "libc::connect",
+                "libc::socket(",
+                "UdpSocket::",
+                "TcpStream::",
+                "TcpListener::",
+            )
+        ),
+        "policy checks and the watch loop must not signal processes or open sockets",
+    )
+    check(
+        "verdict_codes_match_yara_gate",
+        "Verdict::Pass => 0" in watch
+        and "Verdict::Violation => 1" in watch
+        and "Verdict::Incomplete => 2" in watch,
+        "watch verdict exit codes must stay 0 pass, 1 violation, 2 incomplete",
+    )
+    check(
+        "unreadable_processes_counted",
+        "Listing::Unreadable" in sockets and "unreadable.push(pid)" in sockets,
+        "src/sockets.rs must report processes it cannot read instead of skipping them silently",
     )
     check(
         "ci_contents_read",
