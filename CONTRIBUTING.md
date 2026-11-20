@@ -158,7 +158,9 @@ build that has already started.
 
 The release reuses [`.github/workflows/release.yml`](.github/workflows/release.yml)
 through `workflow_call`. Before the build, a planning job chooses the next
-patch. It runs inside the `release` concurrency group, so it cannot race
+patch. That job keeps its write token on this workflow's own commit and
+reads `Cargo.toml` and `Info.plist` for the selected commit through the
+API. It runs inside the `release` concurrency group, so it cannot race
 another manual or automatic publish:
 
 - the `Cargo.toml` version on that commit counts as already used, so

@@ -4,7 +4,9 @@ name: Release
 # workflow_call with prepare_version stamps the next patch onto the build
 # workspace only and does not commit it. Build and verify stay read-only.
 # The plan job may read draft releases (that API requires contents: write)
-# but does not push. Only publish creates a release, and it never overwrites.
+# but does not push and does not check out the release commit. It runs the
+# scripts from this workflow's own commit and reads Cargo.toml and Info.plist
+# through the API. Only publish creates a release, and it never overwrites.
 # The shared concurrency group serializes manual and automatic releases so
 # two planners cannot choose the same patch.
 on:
@@ -100,7 +102,6 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: Require the commit to be on main
         env:
@@ -114,7 +115,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          out="$(./scripts/next-release-version.sh --github)"
+          out="$(./scripts/next-release-version.sh --github --tree-ref "$REF")"
           version="$(printf '%s\n' "$out" | awk -F= '$1=="version"{print $2}')"
           bundle="$(printf '%s\n' "$out" | awk -F= '$1=="bundle_version"{print $2}')"
           lines="$(printf '%s\n' "$out" | grep -c .)"
@@ -131,17 +132,12 @@ jobs:
             echo "::error::refusing CFBundleVersion '${bundle}'"
             exit 1
           fi
-          sha="$(git rev-parse HEAD)"
-          if [ "$sha" != "$REF" ]; then
-            echo "::error::checked out ${sha} but requested ${REF}"
-            exit 1
-          fi
           {
             echo "version=${version}"
             echo "bundle_version=${bundle}"
-            echo "sha=${sha}"
+            echo "sha=${REF}"
           } >> "$GITHUB_OUTPUT"
-          echo "Next release ${version} (CFBundleVersion ${bundle}) at ${sha}"
+          echo "Next release ${version} (CFBundleVersion ${bundle}) at ${REF}"
 
   build:
     name: Build and verify universal app
@@ -179,17 +175,27 @@ jobs:
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.prepare_version == true && inputs.ref || github.sha }}
           persist-credentials: false
-      - name: Record built commit
-        id: sha
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-      - name: Require the commit to be on main
+      - name: Check out the selected main commit
         if: inputs.prepare_version == true
         env:
           REF: ${{ inputs.ref }}
           GH_TOKEN: ${{ github.token }}
-        run: ./scripts/assert-commit-on-main.sh "$REF"
+        run: |
+          set -euo pipefail
+          ./scripts/assert-commit-on-main.sh "$REF"
+          cp scripts/apply-release-version.sh "$RUNNER_TEMP/apply-release-version.sh"
+          chmod +x "$RUNNER_TEMP/apply-release-version.sh"
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" "$REF"
+          git checkout --detach FETCH_HEAD
+          head="$(git rev-parse HEAD)"
+          if [ "$head" != "$REF" ]; then
+            echo "::error::fetched ${head} instead of ${REF}"
+            exit 1
+          fi
+      - name: Record built commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - name: Check the planned commit
         if: inputs.prepare_version == true
         run: |
@@ -201,7 +207,8 @@ jobs:
           fi
       - name: Apply auto-release version in the workspace
         if: inputs.prepare_version == true
-        run: ./scripts/apply-release-version.sh "$PLANNED_VERSION" "$PLANNED_BUNDLE"
+        run: |
+          "$RUNNER_TEMP/apply-release-version.sh" --root "$GITHUB_WORKSPACE" "$PLANNED_VERSION" "$PLANNED_BUNDLE"
       - name: Resolve version from Cargo.toml and check Info.plist
         id: version
         run: |

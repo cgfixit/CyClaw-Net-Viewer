@@ -9,6 +9,7 @@
 #   ./scripts/next-release-version.sh --cargo-version 0.2.0 --bundle-version 4
 #   ./scripts/next-release-version.sh --read-tree
 #   ./scripts/next-release-version.sh --github
+#   ./scripts/next-release-version.sh --github --tree-ref SHA
 #   ./scripts/next-release-version.sh --self-test
 #
 # Stdout is exactly:
@@ -22,11 +23,12 @@ cargo_version=""
 bundle_version=""
 read_tree=0
 use_github=0
+tree_ref=""
 occupied=""
 seen_bundles=""
 
 usage() {
-  echo "Usage: $0 [--cargo-version X.Y.Z] [--bundle-version N] [--occupied VER]... [--seen-bundle N]... [--read-tree] [--root DIR] [--github] [--self-test]" >&2
+  echo "Usage: $0 [--cargo-version X.Y.Z] [--bundle-version N] [--occupied VER]... [--seen-bundle N]... [--read-tree] [--root DIR] [--github] [--tree-ref SHA] [--self-test]" >&2
 }
 
 normalize_version() {
@@ -96,9 +98,22 @@ print(match.group(1))')"
   add_seen_bundle "$version"
 }
 
+materialize_tree_ref() {
+  local ref="$1" tmp
+  tmp="$(mktemp -d)"
+  gh api "repos/${GITHUB_REPOSITORY}/contents/Cargo.toml?ref=${ref}" --jq .content \
+    | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' > "${tmp}/Cargo.toml"
+  gh api "repos/${GITHUB_REPOSITORY}/contents/Info.plist?ref=${ref}" --jq .content \
+    | python3 -c 'import base64,sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))' > "${tmp}/Info.plist"
+  TREE="$tmp"
+}
+
 collect_from_github() {
   local repo tag sha body_versions ref seen_refs=""
   repo="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
+  if [ -n "$tree_ref" ]; then
+    materialize_tree_ref "$tree_ref"
+  fi
   read_tree_versions
   add_seen_bundle "$bundle_version"
 
@@ -239,6 +254,8 @@ self_test() {
     --cargo-version 0.2.0-rc.1 --bundle-version 4
   expect_fail "CFBundleVersion zero" \
     --cargo-version 0.2.0 --bundle-version 0
+  expect_fail "tree ref must be a full SHA" \
+    --github --tree-ref main
 
   local fixture parsed version bundle
   fixture="$(mktemp -d)"
@@ -303,6 +320,10 @@ while [ "$#" -gt 0 ]; do
       use_github=1
       shift
       ;;
+    --tree-ref)
+      tree_ref="$2"
+      shift 2
+      ;;
     --self-test)
       self_test
       exit 0
@@ -318,6 +339,15 @@ while [ "$#" -gt 0 ]; do
       ;;
   esac
 done
+
+if [ -n "$tree_ref" ] && [ "$use_github" -ne 1 ]; then
+  echo "::error::--tree-ref requires --github" >&2
+  exit 2
+fi
+if [ -n "$tree_ref" ] && ! printf '%s' "$tree_ref" | grep -Eq '^[0-9a-f]{40}$'; then
+  echo "::error::--tree-ref must be a 40-character lowercase SHA" >&2
+  exit 1
+fi
 
 if [ "$use_github" -eq 1 ]; then
   collect_from_github
