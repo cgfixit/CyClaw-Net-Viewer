@@ -109,15 +109,26 @@ establish a trusted publisher.
 
 ### Cutting a release
 
-Releases are manual. On `main`, bump `version` in `Cargo.toml`, refresh
-`Cargo.lock` (`cargo build --locked` fails until it matches), and set
-`CFBundleShortVersionString` in `Info.plist` to the same value. After that
-lands, run **Actions → Release → Run workflow** on `main`. Leave the
-`version` input blank: the workflow releases whatever `Cargo.toml` says. If
-you do fill it in (no leading `v`), it must equal that value exactly. The
-workflow:
+Two paths publish the same universal app. Both refuse to overwrite an
+existing tag or release. The manual path releases the version already
+committed on `main`. The automatic path stamps the next patch onto the
+build only and does not commit back to `main`.
 
-1. refuses non-`main` refs, an `Info.plist` version that differs from
+#### Manual
+
+On `main`, bump `version` in `Cargo.toml`, refresh `Cargo.lock`
+(`cargo build --locked` fails until it matches), and set
+`CFBundleShortVersionString` in `Info.plist` to the same value. Keep
+`CFBundleVersion` a positive integer strictly larger than any previous
+release. After that lands, run **Actions → Release → Run workflow** on
+`main`. Leave `version` blank: the workflow releases whatever `Cargo.toml`
+says. If you do fill it in (no leading `v`), it must equal that value
+exactly. Leave **prepare version** off and **ref** blank. Leave **draft**
+checked to review the assets before publishing.
+
+The workflow:
+
+1. refuses non-`main` refs, an `Info.plist` short version that differs from
    `Cargo.toml`, and a `version` input that differs from either;
 2. runs `./scripts/check.sh`, builds the universal app with
    `./scripts/make-app.sh`, and verifies `lipo`, `codesign`, the plist,
@@ -128,9 +139,49 @@ workflow:
    re-checks the checksum, refuses an existing tag or release, and creates
    `v<version>` at the built commit with the ZIP and checksum attached.
 
-Releases are drafts by default; review the assets and notes, then publish.
-Add required reviewers to the `release` environment in repository settings
-to require a second approval before anything is written.
+Releases started by hand are drafts by default. Add required reviewers to
+the `release` environment to require a second approval before anything is
+written. That environment currently has no required reviewers and no wait
+timer, so a run that reaches publish does not pause for a person.
+
+#### Automatic
+
+[`.github/workflows/auto-release.yml`](.github/workflows/auto-release.yml)
+runs after the Bundle workflow succeeds for a push to `main` that is a
+merged pull request. Direct pushes, pull-request builds, and commits
+authored by `github-actions[bot]` do not arm it. It then sleeps 10 minutes
+on `ubuntu-latest` (not a macOS runner) with concurrency group
+`auto-release-debounce` and `cancel-in-progress`. Several merges in that
+window produce one release of the latest `main` commit whose Bundle and CI
+push runs succeeded. A newer success cancels the wait, not a macOS release
+build that has already started.
+
+The release reuses [`.github/workflows/release.yml`](.github/workflows/release.yml)
+through `workflow_call`. Before the build, a planning job chooses the next
+patch. It runs inside the `release` concurrency group, so it cannot race
+another manual or automatic publish:
+
+- the `Cargo.toml` version on that commit counts as already used, so
+  `0.2.0` becomes `0.2.1`;
+- git tags and GitHub releases, including drafts, also count, so the
+  unpublished `v0.2.0` and `v0.1.0` drafts are not overwritten and a taken
+  `v0.2.1` moves the release to `0.2.2`;
+- `CFBundleVersion` becomes one greater than the highest value on `main`,
+  on a tagged `Info.plist`, or recorded by an earlier automatic release
+  (`netviewer-cfbundle-version` in the release notes).
+
+`scripts/apply-release-version.sh` writes that version into the build
+workspace's `Cargo.toml`, `Cargo.lock`, and `Info.plist`
+(`CFBundleShortVersionString` and `CFBundleVersion`). Those four agree in
+the uploaded app. They are not committed, and `main` is not moved. The tag
+points at the merged source commit, which still shows the previous version;
+the release notes say so. A maintainer who wants the source version to
+match a release uses the manual path.
+
+Automatic releases are published, not left as drafts, unless the repository
+variable `AUTO_RELEASE_DRAFT` is the string `true`. The publish job still
+uses the `release` environment and still fails if that tag or release
+appeared while the app was building.
 
 ## Changes and review
 

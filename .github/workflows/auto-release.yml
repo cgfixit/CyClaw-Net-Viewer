@@ -1,0 +1,111 @@
+name: Auto release
+
+# A merged pull request does not release until Bundle has succeeded on main.
+# The ten-minute wait runs on ubuntu-latest, the cheapest hosted runner, and
+# only that wait is cancelled when a newer Bundle success arrives. Several
+# merges in the window therefore produce one release of the latest green
+# main commit. The macOS build is release.yml and is not part of this
+# concurrency group, so a newer merge does not cancel a release already
+# started. This workflow does not push to main, and commits authored by
+# github-actions[bot] do not arm it. workflow_run is what gives the publish
+# token; the build checks out a commit already on main, not the triggering
+# head from a fork.
+on:
+  workflow_run:
+    workflows: ["Bundle"]
+    types: [completed]
+
+jobs:
+  qualify:
+    name: Merged pull request on main
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - name: Ignore direct pushes and automation commits
+        id: check
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$HEAD_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Ignoring unexpected head SHA"
+            exit 0
+          fi
+          login="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}" --jq '.author.login // ""')"
+          if [ "$login" = "github-actions[bot]" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Ignoring github-actions commit ${HEAD_SHA}"
+            exit 0
+          fi
+          count="$(gh api -H "Accept: application/vnd.github+json" \
+            "repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+            --jq '[.[] | select(.merged_at != null and .base.ref == "main")] | length')"
+          if [ "$count" = "0" ]; then
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            echo "Ignoring ${HEAD_SHA}: not a pull request merged into main"
+            exit 0
+          fi
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+          echo "Merged pull request commit ${HEAD_SHA} will arm the debounce"
+
+  debounce:
+    name: Wait for a quiet main
+    needs: qualify
+    if: needs.qualify.outputs.proceed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    concurrency:
+      group: auto-release-debounce
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+    outputs:
+      sha: ${{ steps.pick.outputs.sha }}
+    steps:
+      # A cancelled wait is billed only for the minutes already slept.
+      # Sleeping here, not on macos-15, keeps the expensive runner for the build.
+      - name: Wait ten minutes so close merges collapse
+        run: sleep 600
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pick the latest green commit on main
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(./scripts/select-auto-release-commit.sh)"
+          if ! printf '%s' "$sha" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::selector returned '${sha}'"
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${sha}"
+
+  release:
+    name: Build and publish
+    needs: debounce
+    if: needs.debounce.result == 'success' && needs.debounce.outputs.sha != ''
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      prepare_version: true
+      ref: ${{ needs.debounce.outputs.sha }}
+      draft: ${{ vars.AUTO_RELEASE_DRAFT == 'true' }}
+      prerelease: false

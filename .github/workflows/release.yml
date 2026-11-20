@@ -1,7 +1,12 @@
 name: Release
 
-# Manual only: a maintainer runs it on main; the version comes from Cargo.toml.
-# Build/verify runs read-only; only the publish job may write a release.
+# Manual dispatch releases the version already committed on main.
+# workflow_call with prepare_version stamps the next patch onto the build
+# workspace only and does not commit it. Build and verify stay read-only.
+# The plan job may read draft releases (that API requires contents: write)
+# but does not push. Only publish creates a release, and it never overwrites.
+# The shared concurrency group serializes manual and automatic releases so
+# two planners cannot choose the same patch.
 on:
   workflow_dispatch:
     inputs:
@@ -20,6 +25,43 @@ on:
         required: true
         default: false
         type: boolean
+      prepare_version:
+        description: "Leave false. When true, stamp the next free patch onto this build only and do not commit it."
+        required: false
+        default: false
+        type: boolean
+      ref:
+        description: "Leave blank. Automatic releases pass the full main commit SHA to build."
+        required: false
+        default: ""
+        type: string
+  workflow_call:
+    inputs:
+      version:
+        description: "Optional. Blank releases the Cargo.toml version unless prepare_version is true."
+        required: false
+        default: ""
+        type: string
+      draft:
+        description: "Create the release as a draft"
+        required: false
+        default: true
+        type: boolean
+      prerelease:
+        description: "Mark the release as a pre-release"
+        required: false
+        default: false
+        type: boolean
+      prepare_version:
+        description: "Stamp the next free patch onto this build only."
+        required: false
+        default: false
+        type: boolean
+      ref:
+        description: "Full commit SHA on main to build. Used when prepare_version is true."
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -33,29 +75,140 @@ env:
   MACOSX_DEPLOYMENT_TARGET: "12.0"
 
 jobs:
+  plan:
+    name: Choose the next patch
+    if: inputs.prepare_version == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Listing draft releases requires a token with push access. This job
+    # does not push; publish is the only job that creates a release.
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+      bundle_version: ${{ steps.compute.outputs.bundle_version }}
+      sha: ${{ steps.compute.outputs.sha }}
+    steps:
+      - name: Require a full commit SHA
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::prepare_version requires ref to be a 40-character lowercase SHA"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Require the commit to be on main
+        env:
+          REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/assert-commit-on-main.sh "$REF"
+      - name: Compute the next free patch
+        id: compute
+        env:
+          REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          out="$(./scripts/next-release-version.sh --github)"
+          version="$(printf '%s\n' "$out" | awk -F= '$1=="version"{print $2}')"
+          bundle="$(printf '%s\n' "$out" | awk -F= '$1=="bundle_version"{print $2}')"
+          lines="$(printf '%s\n' "$out" | grep -c .)"
+          if [ "$lines" -ne 2 ]; then
+            echo "::error::unexpected version script output"
+            printf '%s\n' "$out"
+            exit 1
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::refusing version '${version}'"
+            exit 1
+          fi
+          if ! printf '%s' "$bundle" | grep -Eq '^[1-9][0-9]*$'; then
+            echo "::error::refusing CFBundleVersion '${bundle}'"
+            exit 1
+          fi
+          sha="$(git rev-parse HEAD)"
+          if [ "$sha" != "$REF" ]; then
+            echo "::error::checked out ${sha} but requested ${REF}"
+            exit 1
+          fi
+          {
+            echo "version=${version}"
+            echo "bundle_version=${bundle}"
+            echo "sha=${sha}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Next release ${version} (CFBundleVersion ${bundle}) at ${sha}"
+
   build:
     name: Build and verify universal app
+    needs: plan
+    if: ${{ !cancelled() && (needs.plan.result == 'success' || needs.plan.result == 'skipped') }}
     runs-on: macos-15
     timeout-minutes: 60
+    permissions:
+      contents: read
     outputs:
       version: ${{ steps.version.outputs.version }}
+      bundle_version: ${{ steps.version.outputs.bundle_version }}
+      sha: ${{ steps.sha.outputs.sha }}
     env:
       VERSION_INPUT: ${{ inputs.version }}
+      PREPARE_VERSION: ${{ inputs.prepare_version }}
+      PLANNED_VERSION: ${{ needs.plan.outputs.version }}
+      PLANNED_BUNDLE: ${{ needs.plan.outputs.bundle_version }}
+      PLANNED_SHA: ${{ needs.plan.outputs.sha }}
     steps:
       - name: Require the default branch
         if: github.ref != 'refs/heads/main'
         run: |
           echo "::error::Releases are cut from main only (got $GITHUB_REF)."
           exit 1
+      - name: Require a full commit SHA
+        if: inputs.prepare_version == true
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::prepare_version requires ref to be a 40-character lowercase SHA"
+            exit 1
+          fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.prepare_version == true && inputs.ref || github.sha }}
           persist-credentials: false
+      - name: Record built commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Require the commit to be on main
+        if: inputs.prepare_version == true
+        env:
+          REF: ${{ inputs.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/assert-commit-on-main.sh "$REF"
+      - name: Check the planned commit
+        if: inputs.prepare_version == true
+        run: |
+          set -euo pipefail
+          head="$(git rev-parse HEAD)"
+          if [ "$head" != "$PLANNED_SHA" ]; then
+            echo "::error::checked out ${head} but planned ${PLANNED_SHA}"
+            exit 1
+          fi
+      - name: Apply auto-release version in the workspace
+        if: inputs.prepare_version == true
+        run: ./scripts/apply-release-version.sh "$PLANNED_VERSION" "$PLANNED_BUNDLE"
       - name: Resolve version from Cargo.toml and check Info.plist
         id: version
         run: |
           cargo_version="$(awk -F'"' '/^\[package\]/{p=1;next} /^\[/{p=0} p && /^version = /{print $2; exit}' Cargo.toml)"
           plist_version="$(plutil -extract CFBundleShortVersionString raw Info.plist)"
-          echo "input=${VERSION_INPUT:-<blank>} Cargo.toml=$cargo_version Info.plist=$plist_version"
+          bundle_version="$(plutil -extract CFBundleVersion raw Info.plist)"
+          echo "input=${VERSION_INPUT:-<blank>} Cargo.toml=$cargo_version Info.plist=$plist_version CFBundleVersion=$bundle_version"
           if ! printf '%s' "$cargo_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
             echo "::error::Cargo.toml version '$cargo_version' must look like 1.2.3 or 1.2.3-rc.1"
             exit 1
@@ -68,7 +221,18 @@ jobs:
             echo "::error::version input '$VERSION_INPUT' does not match Cargo.toml ($cargo_version). Leave it blank to release $cargo_version, or bump Cargo.toml, Cargo.lock and Info.plist on main first."
             exit 1
           fi
+          if [ "${PREPARE_VERSION}" = "true" ]; then
+            if [ "$cargo_version" != "$PLANNED_VERSION" ]; then
+              echo "::error::workspace version $cargo_version does not match the planned $PLANNED_VERSION"
+              exit 1
+            fi
+            if [ "$bundle_version" != "$PLANNED_BUNDLE" ]; then
+              echo "::error::CFBundleVersion $bundle_version does not match the planned $PLANNED_BUNDLE"
+              exit 1
+            fi
+          fi
           echo "version=$cargo_version" >> "$GITHUB_OUTPUT"
+          echo "bundle_version=$bundle_version" >> "$GITHUB_OUTPUT"
       - uses: dtolnay/rust-toolchain@3230091d7ef9483f601620abacc570c22cf44d22 # 1.85.0
         with:
           toolchain: 1.85.0
@@ -119,8 +283,11 @@ jobs:
       contents: write
     env:
       VERSION: ${{ needs.build.outputs.version }}
+      BUNDLE_VERSION: ${{ needs.build.outputs.bundle_version }}
+      TARGET_SHA: ${{ needs.build.outputs.sha }}
       DRAFT: ${{ inputs.draft }}
       PRERELEASE: ${{ inputs.prerelease }}
+      PREPARE_VERSION: ${{ inputs.prepare_version }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -143,10 +310,19 @@ jobs:
           fi
       - name: Create release
         run: |
+          set -euo pipefail
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::refusing version '${VERSION}'"
+            exit 1
+          fi
+          if ! printf '%s' "$TARGET_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::refusing to tag unexpected commit '${TARGET_SHA}'"
+            exit 1
+          fi
           TAG="v$VERSION"
           SUM="$(cut -d' ' -f1 dist/CyClaw-Net-Viewer.zip.sha256)"
           cat > notes.md <<EOF
-          Universal (\`arm64\` + \`x86_64\`) macOS 12+ app built from \`$GITHUB_SHA\`
+          Universal (\`arm64\` + \`x86_64\`) macOS 12+ app built from \`$TARGET_SHA\`
           by [workflow run $GITHUB_RUN_ID]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID).
 
           SHA-256 \`CyClaw-Net-Viewer.zip\`: \`$SUM\`
@@ -161,12 +337,25 @@ jobs:
           Ad-hoc signed, not notarized. Gatekeeper may ask for a per-app
           approval; do not disable Gatekeeper system-wide.
           EOF
+          if [ "${PREPARE_VERSION}" = "true" ]; then
+            if ! printf '%s' "$BUNDLE_VERSION" | grep -Eq '^[1-9][0-9]*$'; then
+              echo "::error::refusing to record CFBundleVersion '${BUNDLE_VERSION}'"
+              exit 1
+            fi
+            cat >> notes.md <<EOF
+
+          Version \`$VERSION\` (CFBundleVersion $BUNDLE_VERSION) is stamped in this
+          build only. The tag points at the source revision above; \`main\` is not
+          changed.
+          netviewer-cfbundle-version: $BUNDLE_VERSION
+          EOF
+          fi
           flags=()
           if [ "$DRAFT" = "true" ]; then flags+=(--draft); fi
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --target "$TARGET_SHA" \
             --title "CyClaw-Net-Viewer $VERSION" \
             --notes-file notes.md \
             --generate-notes \

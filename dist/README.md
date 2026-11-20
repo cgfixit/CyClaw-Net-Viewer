@@ -12,7 +12,9 @@ you need. Pull-request artifacts contain proposed changes. Actions zips expire
 and require GitHub sign-in; they are not the public distribution
 channel.
 
-Releases are produced by the manual
+Merges to `main` publish the next patch automatically once Bundle and CI
+succeed. Maintainers can still cut a draft of the version committed on
+`main` with the
 [Release workflow](https://github.com/cgfixit/CyClaw-Net-Viewer/actions/workflows/release.yml)
 (see [CONTRIBUTING.md](../CONTRIBUTING.md#cutting-a-release)).
 
