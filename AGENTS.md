@@ -32,7 +32,7 @@ open PRs for overlapping work first and use `.github/PULL_REQUEST_TEMPLATE.md`.
 - `src/kill.rs`, `src/export.rs`: process signaling and exclusive CSV writes.
 - `tests/`: diff regression cases, live loopback listener and Bash egress
   tests, and `tests/watch.rs` for watch mode and `--tree`.
-- `scripts/`: macOS validation and bundle generation.
+- `scripts/`: macOS validation, bundle generation, and release version selection.
 - `tools/`: optional Python PDF generators, not application dependencies.
 
 ## Build and validation
@@ -95,7 +95,10 @@ and use the macOS CI results, never remove the platform guard to fake a pass.
   offset assertions, read a record only when the call returns its full
   length, and add fields by naming them, not by guessing offsets.
 - Keep GitHub Actions permissions read-only, checkout credentials disabled,
-  and action references pinned to reviewed full commit hashes.
+  and action references pinned to reviewed full commit hashes. The release
+  publish job is the write exception (`contents: write` on the `release`
+  environment). Auto-release planning uses the same scope so draft releases
+  are visible; it does not push.
 
 ## Repository hygiene
 

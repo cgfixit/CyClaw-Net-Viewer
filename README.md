@@ -180,8 +180,11 @@ model. Record fields, ordering, and limits: [Design](docs/DESIGN.md#watch-stream
 
 Download `CyClaw-Net-Viewer.zip` and `CyClaw-Net-Viewer.zip.sha256` from the
 latest [GitHub Release](https://github.com/cgfixit/CyClaw-Net-Viewer/releases/latest).
-Releases are built, verified, and attached by the manual
-[Release workflow](.github/workflows/release.yml); see
+A merged pull request is published automatically, about ten minutes after
+its Bundle and CI runs succeed, as the next patch (`0.2.1`, then `0.2.2`,
+and so on). The
+[Release workflow](.github/workflows/release.yml) builds and attaches that
+app; cutting a specific version by hand is described in
 [Cutting a release](CONTRIBUTING.md#cutting-a-release).
 No Rust is required to run a downloaded app. Build from source (below) if
 you prefer not to use a prebuilt binary.

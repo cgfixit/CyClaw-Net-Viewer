@@ -33,3 +33,7 @@ jobs:
           "$RUNNER_TEMP/actionlint" -color
       - name: Check macOS validation and packaging scripts
         run: shellcheck --severity=warning scripts/*.sh
+      - name: Dry-run release version selection
+        run: |
+          ./scripts/next-release-version.sh --self-test
+          ./scripts/apply-release-version.sh --self-test
