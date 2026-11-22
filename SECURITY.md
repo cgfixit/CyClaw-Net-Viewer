@@ -108,13 +108,64 @@ does not authenticate a publisher. Do not turn off Gatekeeper globally.
 See [the initialization review](docs/INITIAL_REVIEW.md) for the scope and
 remaining limitations of the repository review.
 
-## Known dependency advisories (2026-09-06)
+## Known dependency advisories (rechecked 2026-11-22)
 
-The full lockfile audit reports `RUSTSEC-2026-0194` and `RUSTSEC-2026-0195`
-against `quick-xml 0.30.0`, pulled through the Linux/BSD accessibility stack.
-It is absent from both supported macOS target dependency trees. Those two
-IDs are ignored in `.cargo/audit.toml` as Darwin-unreachable DoS findings
-so the Audit job can pass without changing the macOS binary, AccessKit, or
-the rustc 1.85.0 pin. Drop the ignores when `zbus_xml` 4.x leaves the
-lockfile. See the review for evidence and follow-up. The audit also reports
-unmaintained `paste` and `ttf-parser` packages; those are not ignored.
+`cargo audit` 0.22.2 reads the whole lockfile, including crates that the
+macOS binaries never compile.
+
+`rustix` 1.1.6 replaces 1.1.5 (`RUSTSEC-2026-0486`: xattr helpers could
+mark unwritten bytes initialized when given a zero-length buffer). The
+0.38 line does not have that API and is not affected. Neither version is
+in the `aarch64-apple-darwin` or `x86_64-apple-darwin` trees. 1.1.6 is
+what the Linux and BSD AccessKit and Wayland crates resolve. Its
+`rust-version` is 1.65.
+
+`url` is pinned to exactly 2.5.9 (`RUSTSEC-2026-0592`: `Url::origin()`
+recursed on nested `blob:` URLs and could overflow the stack). 2.5.9
+declares `rust-version` 1.63. That release also bounds `..` segment
+parsing and follows the URL Standard for a few edge cases: caret encoding
+in paths, `file:` URLs with a drive letter, backslashes in non-special
+ports, and a non-recursive origin for `blob:` URLs whose inner scheme is
+not `http`, `https`, or `file`. Application code does not call `Url`.
+`webbrowser` 1.2.4, pulled in by egui, does. `form_urlencoded` moves to
+1.2.3 because 2.5.9 requires `^1.2.3` (`rust-version` 1.51).
+
+`quick-xml` 0.30.0 remains next to 0.41.0. `RUSTSEC-2026-0194` and
+`RUSTSEC-2026-0195` are high-severity denial-of-service findings fixed
+only in `quick-xml >= 0.41.0`. The 0.30 copy is Linux and BSD only:
+
+`eframe` 0.31.1 → `egui-winit` 0.31.1 → `accesskit_winit` 0.23.1 →
+`accesskit_unix` 0.13.1 → `accesskit_atspi_common` 0.10.1 →
+`atspi-common` 0.6.0 → `zbus-lockstep` 0.4.4 → `zbus_xml` 4.0.0 →
+`quick-xml` 0.30.0.
+
+`cargo update -p quick-xml@0.30.0 --precise 0.41.0` cannot select 0.41.0.
+`zbus_xml` 4.0.0 requires `quick-xml ^0.30`, and 4.0.0 is the only 4.x
+release. `zbus_xml` 5.0.2 and 5.1.0 still depend on `quick-xml` `^0.36`
+and `^0.38`. `zbus_xml` 5.2 and later drop `quick-xml` but declare
+`rust-version` 1.87, above this crate's 1.85.0 pin, and `zbus-lockstep`
+0.6.0 (the release that requires `zbus_xml ^5.2`) is outside
+`atspi-common`'s `^0.4.4`. `accesskit_winit` 0.23 cannot take
+`accesskit_unix` 0.14 or newer, and `egui-winit` 0.31.1 cannot take
+`accesskit_winit` past 0.23, so removing 0.30 means leaving the exact
+`eframe` 0.31.1 pin and changing Darwin accessibility. Both macOS trees
+still print nothing for `quick-xml@0.30.0`. The two IDs stay ignored in
+`.cargo/audit.toml` as Darwin-unreachable DoS findings so the Audit job
+can pass. Drop the ignores when `zbus_xml` 4.x leaves the lockfile
+without changing Darwin AccessKit or rustc 1.85.0. Do not turn
+accessibility off to clear the advisory.
+
+Unmaintained warnings are not ignored. None of these has a patched
+release, so a lockfile bump cannot clear them:
+
+- `paste` 1.0.15 (`RUSTSEC-2024-0436`) via `accesskit_windows` on
+  Windows. The suggested replacement is a different crate (`pastey`).
+- `ttf-parser` 0.25.1 (`RUSTSEC-2026-0192`) via `epaint` → `ab_glyph` →
+  `owned_ttf_parser` on Darwin. Upstream points at `skrifa`, which is an
+  egui font-stack change.
+- `zbus_names` 3.0.0, `zvariant` 4.2.0, and `zvariant_derive` 4.2.0
+  (`RUSTSEC-2026-0371`, `RUSTSEC-2026-0370`, `RUSTSEC-2026-0372`) on the
+  Linux/BSD zbus 4 stack. They were folded into zbus 6, which is outside
+  this pin.
+
+There is no `deny.toml`. The Audit workflow runs `cargo audit`.
