@@ -58,6 +58,20 @@ Do not disable accessibility just to remove an advisory. Unmaintained
 `paste` and `ttf-parser` also need upstream tracking and are not ignored.
 The yanked URL warning is addressed by the patch update above.
 
+### Recheck 2026-11-22
+
+From `7baab1c`, `cargo update -p quick-xml@0.30.0 --precise 0.41.0` still
+fails because `zbus_xml` 4.0.0 requires `quick-xml ^0.30`. Precise updates
+to `zbus_xml` 5.2.1 and `zbus-lockstep` 0.6.0 fail on the same semver caps.
+`zbus_xml` 5.0.2 and 5.1.0 would still pull `quick-xml` below 0.41, and
+`zbus_xml` 5.2+ declares rust-version 1.87. The two ignores stay.
+`rustix` 1.1.5 moved to 1.1.6 for `RUSTSEC-2026-0486`; the 0.38 line is
+unaffected, and neither version is in the macOS trees. The direct `url`
+pin moved from 2.5.8 to 2.5.9 for `RUSTSEC-2026-0592`, taking
+`form_urlencoded` to 1.2.3. Unmaintained `paste`, `ttf-parser`,
+`zbus_names`, `zvariant`, and `zvariant_derive` have no patched releases
+and were left in place. Details are in [Security](../SECURITY.md).
+
 ## Remaining limits
 
 PID reuse can race confirmation; stronger process identity tracking would

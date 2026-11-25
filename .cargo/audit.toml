@@ -1,10 +1,21 @@
 # cargo-audit 0.22.2 reads this from the project `.cargo/` directory.
-# Do not copy the cargo-audit example's deny = ["unmaintained"]: paste and
-# ttf-parser are Darwin-reachable and must remain warnings, not failures.
+# Do not copy the cargo-audit example's deny = ["unmaintained"]: ttf-parser
+# is on the Darwin egui path, and paste, zbus_names, zvariant, and
+# zvariant_derive have no patched release. Those stay warnings.
 
 [advisories]
-# Linux/BSD AccessKit (accesskit_unix -> zbus_xml 4.0.0 -> quick-xml 0.30.0).
-# Absent from aarch64-apple-darwin / x86_64-apple-darwin trees (DoS only).
+# Linux/BSD AccessKit only (rechecked 2026-11-22):
+#   eframe 0.31.1 -> egui-winit 0.31.1 -> accesskit_winit 0.23.1
+#   -> accesskit_unix 0.13.1 -> accesskit_atspi_common 0.10.1
+#   -> atspi-common 0.6.0 -> zbus-lockstep 0.4.4 -> zbus_xml 4.0.0
+#   -> quick-xml 0.30.0
+# Absent from aarch64-apple-darwin / x86_64-apple-darwin (DoS only).
+# `cargo update -p quick-xml@0.30.0 --precise 0.41.0` cannot select 0.41:
+# zbus_xml 4.0.0 requires quick-xml ^0.30, and 4.0.0 is the only 4.x.
+# zbus_xml 5.0.2 / 5.1.0 still depend on quick-xml ^0.36 / ^0.38.
+# zbus_xml 5.2+ drops quick-xml but declares rust-version 1.87, and
+# zbus-lockstep 0.6.0 (which requires that) is outside atspi-common ^0.4.4.
+# Removing 0.30 means leaving the eframe =0.31.1 pin.
 # Drop these ignores when zbus_xml 4.x is gone from the lockfile without
 # changing Darwin AccessKit or rustc 1.85.0.
 ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]
