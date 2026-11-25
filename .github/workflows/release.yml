@@ -18,9 +18,9 @@ on:
         default: ""
         type: string
       draft:
-        description: "Create the release as a draft (publish it by hand after review)"
+        description: "Create the release as a draft instead of publishing it right away"
         required: true
-        default: true
+        default: false
         type: boolean
       prerelease:
         description: "Mark the release as a pre-release"
@@ -47,7 +47,7 @@ on:
       draft:
         description: "Create the release as a draft"
         required: false
-        default: true
+        default: false
         type: boolean
       prerelease:
         description: "Mark the release as a pre-release"
